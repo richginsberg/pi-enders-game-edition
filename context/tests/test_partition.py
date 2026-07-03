@@ -1,4 +1,4 @@
-from context.partition import normalize_remote, partition_from
+from context.partition import normalize_remote, partition_from, resolve_partition
 
 
 def test_normalize_scp_like():
@@ -37,3 +37,8 @@ def test_partition_falls_back_to_cwd():
 def test_partition_bad_origin_falls_through():
     # unparseable origin -> use toplevel, not a broken key
     assert partition_from("garbage", "/srv/acme", "/tmp/z") == "acme"
+
+
+def test_resolve_partition_explicit_wins_and_lowercases():
+    # explicit key short-circuits detection (no git/fs probe) and normalizes case
+    assert resolve_partition("GitHub.com/Org/Repo", cwd="/anywhere") == "github.com/org/repo"

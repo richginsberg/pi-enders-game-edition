@@ -67,3 +67,14 @@ def detect_partition(start: Path | None = None) -> str:
     origin = _git(["config", "--get", "remote.origin.url"], cwd)
     toplevel = _git(["rev-parse", "--show-toplevel"], cwd)
     return partition_from(origin, toplevel, str(cwd))
+
+
+def resolve_partition(partition: str | None = None, cwd: str | None = None) -> str:
+    """Pick the partition for a request: explicit key wins, else detect from cwd.
+
+    The context sidecar can serve many repos, so callers pass the working directory
+    of the session that made the request rather than relying on the server's cwd.
+    """
+    if partition:
+        return partition.lower()
+    return detect_partition(Path(cwd) if cwd else None)

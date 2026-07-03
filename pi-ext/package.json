@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Divide-and-conquer Pi extension: fleet provider, /fleet, /deploy, /tasks",
   "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"

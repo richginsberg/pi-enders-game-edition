@@ -61,7 +61,14 @@ cd context && pip install -e .
 cp .env.example .env               # set DNC_PG_DSN + embedding endpoint (gitignored)
 python -m context.cli partition    # show the detected repo partition key
 python -m context.cli recall "how does the router pick a squad?"
+python -m context.cli serve        # HTTP sidecar on :7432 (POST /recall, /remember)
 ```
 
 `ContextService.remember(items)` / `recall(query)` are the API the salience-judge
 write path and vague-prompt injection build on. Requires pgvector ≥ 0.5 (HNSW index).
+
+**Vague-prompt injection**: the Pi extension watches `before_agent_start`; when a
+prompt is short/under-specified it calls the sidecar's `/recall` (passing the session
+cwd for partition resolution), injects the top matches into the system prompt, and
+shows a `pulled N context items` status. Override the sidecar URL with
+`DNC_CONTEXT_URL`. If the sidecar is down, the turn proceeds uninjected.

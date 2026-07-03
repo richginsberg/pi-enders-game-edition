@@ -6,7 +6,12 @@ requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.7",
     "psycopg[binary]>=3.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
+
+[project.scripts]
+dnc-context = "context.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

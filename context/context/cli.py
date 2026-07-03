@@ -17,6 +17,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="context")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("partition", help="print the detected partition key")
+    sub.add_parser("serve", help="run the HTTP sidecar (POST /recall, /remember)")
     r = sub.add_parser("recall", help="retrieve relevant context for a query")
     r.add_argument("query")
     r.add_argument("-k", type=int, default=5)
@@ -27,6 +28,10 @@ def main() -> None:
 
     if args.cmd == "partition":
         print(detect_partition())
+        return
+    if args.cmd == "serve":
+        from .api import serve
+        serve()
         return
 
     from .service import ContextService  # imports psycopg; only needed for these paths

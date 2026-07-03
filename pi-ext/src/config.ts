@@ -2,6 +2,7 @@
 export const LITELLM_BASE_URL = process.env.DNC_LITELLM_URL ?? "http://localhost:4000";
 export const LITELLM_API_KEY = "$LITELLM_MASTER_KEY";
 export const FLEETD_BASE_URL = process.env.DNC_FLEETD_URL ?? "http://localhost:7431";
+export const CONTEXT_BASE_URL = process.env.DNC_CONTEXT_URL ?? "http://localhost:7432";
 
 export async function fleetdGet<T>(path: string): Promise<T> {
   const res = await fetch(`${FLEETD_BASE_URL}${path}`);
@@ -16,6 +17,17 @@ export async function fleetdSend<T>(method: "POST" | "PUT", path: string, body?:
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`fleetd ${method} ${path}: ${res.status} ${await res.text().catch(() => "")}`);
+  return (await res.json()) as T;
+}
+
+/** POST JSON to the context sidecar (long-term memory service). */
+export async function contextPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${CONTEXT_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`context ${path}: ${res.status}`);
   return (await res.json()) as T;
 }
 
