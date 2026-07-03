@@ -19,7 +19,9 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 
 ```bash
 # 1. Control-plane box: LiteLLM with the custom router
-cd router && pip install -e . && litellm --config litellm-config.yaml
+cd router && pip install -e .
+cp litellm-config.example.yaml litellm-config.yaml  # local copy, gitignored — add your endpoints/keys
+litellm --config litellm-config.yaml
 
 # 2. fleetd
 cd fleetd && pip install -e . && fleetd serve

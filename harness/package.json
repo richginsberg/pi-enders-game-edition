@@ -3,9 +3,14 @@
   "version": "0.1.0",
   "description": "Relentless (Ralph-loop) task runner: DoD ledger, judge panel, fleet fan-out",
   "type": "module",
-  "bin": { "dnc-run": "./src/cli.ts" },
-  "dependencies": {},
+  "bin": {
+    "dnc-run": "./src/cli.ts"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
   }
 }

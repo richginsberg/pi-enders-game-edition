@@ -1,0 +1,46 @@
+# LiteLLM proxy config TEMPLATE for the divide-and-conquer fleet.
+#
+#   cp litellm-config.example.yaml litellm-config.yaml   # gitignored
+#
+# Keep host addresses and keys out of the repo: reference env vars
+# (os.environ/VAR) or edit only your local litellm-config.yaml copy.
+# fleetd keeps model_list in sync as deployments come and go (M3);
+# until then, register live servers by hand in your local copy.
+
+model_list:
+  # --- S1: 4x3090 rig, Step-3.5-Flash GGUF q3 via llama.cpp ---
+  - model_name: tier:s1
+    litellm_params:
+      model: openai/step-3.5-flash
+      api_base: os.environ/DNC_S1_API_BASE
+      api_key: none
+    model_info:
+      dnc_squad: s1
+
+  # --- S0: frontier APIs ---
+  - model_name: tier:s0
+    litellm_params:
+      model: openai/glm-4.7
+      api_base: https://api.z.ai/api/paas/v4
+      api_key: os.environ/GLM_API_KEY
+    model_info:
+      dnc_squad: s0
+  - model_name: tier:s0
+    litellm_params:
+      model: xai/grok-4
+      api_key: os.environ/XAI_API_KEY
+    model_info:
+      dnc_squad: s0
+
+  # tier:auto is resolved by the custom strategy; give it every deployment.
+  # (LiteLLM requires the alias to exist; the strategy filters by dnc_squad.)
+
+router_settings:
+  routing_strategy: "custom"
+  routing_strategy_args: {}
+
+litellm_settings:
+  custom_router: dnc_router.strategy.DncRoutingStrategy
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

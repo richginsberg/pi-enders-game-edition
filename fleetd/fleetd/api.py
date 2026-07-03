@@ -46,9 +46,28 @@ def upsert_deployment(dep_id: str, dep: Deployment) -> Deployment:
     if dep.id != dep_id:
         raise HTTPException(400, "id mismatch")
     db.upsert_deployment(dep)
-    # TODO(M3): trigger the actual IaC play (plays.deploy) instead of just cataloging,
-    # then register the served model with LiteLLM (litellm_sync.register).
     return dep
+
+
+@app.post("/deployments/{dep_id}/apply")
+async def apply_deployment(dep_id: str) -> dict:
+    """Run the deploy play (pull image, fetch model, replace container, health poll)."""
+    from . import plays
+
+    dep = next((d for d in db.list_deployments() if d.id == dep_id), None)
+    if dep is None:
+        raise HTTPException(404, f"unknown deployment {dep_id}")
+    host = next((h for h in db.list_hosts() if h.id == dep.host_id), None)
+    if host is None:
+        raise HTTPException(409, f"deployment references unknown host {dep.host_id}")
+
+    dep.status = "deploying"
+    db.upsert_deployment(dep)
+    report = await plays.deploy(host, dep)
+    dep.status = "healthy" if report.ok else "unhealthy"
+    db.upsert_deployment(dep)
+    # TODO(task #8/#10): on success register the model with LiteLLM (litellm_sync).
+    return {"ok": report.ok, "steps": report.steps}
 
 
 # -- discovery / adoption -----------------------------------------------------------

@@ -8,4 +8,12 @@ __pycache__/
 *.sqlite3
 *.db
 .env
+.env.*
 secrets/
+
+# local (non-example) configs — copy from *.example.* and edit locally
+router/litellm-config.yaml
+fleetd/hosts.yaml
+*.local.yaml
+*.local.ini
+*.local.json
