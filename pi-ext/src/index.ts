@@ -3,6 +3,7 @@
  * Async factory: fleet models are registered before startup completes.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerDeployCommand } from "./deploy-command.js";
 import { registerFleetCommand } from "./fleet-command.js";
 import { registerFleetProvider } from "./provider.js";
 import { registerTasksCommand } from "./tasks-command.js";
@@ -13,6 +14,5 @@ export default async function (pi: ExtensionAPI) {
   registerFleetCommand(pi);
   registerTasksCommand(pi);
   registerTierHints(pi);
-
-  // TODO(M3): /deploy wizard (ctx.ui.custom() multi-step form → fleetd play).
+  registerDeployCommand(pi);
 }

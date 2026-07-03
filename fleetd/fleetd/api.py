@@ -70,6 +70,17 @@ async def apply_deployment(dep_id: str) -> dict:
     return {"ok": report.ok, "steps": report.steps}
 
 
+@app.post("/hosts/{host_id}/preflight")
+async def preflight_host(host_id: str) -> dict:
+    """SSH in and verify Docker + GPU driver on a (possibly new) host."""
+    from . import plays
+
+    host = next((h for h in db.list_hosts() if h.id == host_id), None)
+    if host is None:
+        raise HTTPException(404, f"unknown host {host_id}")
+    return await plays.preflight(host)
+
+
 # -- discovery / adoption -----------------------------------------------------------
 @app.post("/hosts/{host_id}/discover")
 async def discover(host_id: str) -> list[Deployment]:

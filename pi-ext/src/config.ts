@@ -8,3 +8,13 @@ export async function fleetdGet<T>(path: string): Promise<T> {
   if (!res.ok) throw new Error(`fleetd ${path}: ${res.status}`);
   return (await res.json()) as T;
 }
+
+export async function fleetdSend<T>(method: "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${FLEETD_BASE_URL}${path}`, {
+    method,
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`fleetd ${method} ${path}: ${res.status} ${await res.text().catch(() => "")}`);
+  return (await res.json()) as T;
+}
