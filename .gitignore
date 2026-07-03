@@ -9,6 +9,8 @@ __pycache__/
 *.db
 .env
 .env.*
+!.env.example
+!*/.env.example
 secrets/
 
 # local (non-example) configs — copy from *.example.* and edit locally

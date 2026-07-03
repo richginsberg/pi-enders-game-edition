@@ -13,6 +13,7 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 | [`router/`](router/) | Python | LiteLLM proxy config + custom routing strategy (tier selection, prefix-hash cache affinity) |
 | [`pi-ext/`](pi-ext/) | TypeScript | Pi extension: fleet provider (models from LiteLLM), `/fleet`, `/deploy`, `/tasks` commands |
 | [`harness/`](harness/) | TypeScript | Relentless (Ralph-loop) runner: DoD ledger, judge/enlistment, subagent fan-out |
+| [`context/`](context/) | Python | Long-term context: repo-partitioned pgvector store + `embed:qwen3` client; `remember()`/`recall()` for the RAG layer |
 | [`agents/`](agents/) | Markdown | Engineering personas (Product Manager, Principal Engineer) added on top of `@chankov/agent-skills`, bound to fleet tiers |
 | [`tools/`](tools/) | Python | Operational scripts (e.g. `bench_embed.py` — embedding-endpoint latency benchmark) |
 | `pi/` | — | Upstream Pi clone, reference only (not part of this repo) |
@@ -49,3 +50,18 @@ npx @chankov/agent-skills init        # installs the 15 stock personas into agen
   maps every persona's model to a fleet squad tier. Referencing a `fleet/tier:*`
   model means persona subagents route through the custom router (complexity + cache
   affinity) just like interactive sessions.
+
+## Long-term context (M5)
+
+Shared semantic memory, partitioned by repo, in Postgres + pgvector. Durable facts
+are embedded via the fleet's `embed:qwen3` and retrieved to enrich vague prompts.
+
+```bash
+cd context && pip install -e .
+cp .env.example .env               # set DNC_PG_DSN + embedding endpoint (gitignored)
+python -m context.cli partition    # show the detected repo partition key
+python -m context.cli recall "how does the router pick a squad?"
+```
+
+`ContextService.remember(items)` / `recall(query)` are the API the salience-judge
+write path and vague-prompt injection build on. Requires pgvector ≥ 0.5 (HNSW index).
