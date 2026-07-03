@@ -13,6 +13,8 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 | [`router/`](router/) | Python | LiteLLM proxy config + custom routing strategy (tier selection, prefix-hash cache affinity) |
 | [`pi-ext/`](pi-ext/) | TypeScript | Pi extension: fleet provider (models from LiteLLM), `/fleet`, `/deploy`, `/tasks` commands |
 | [`harness/`](harness/) | TypeScript | Relentless (Ralph-loop) runner: DoD ledger, judge/enlistment, subagent fan-out |
+| [`agents/`](agents/) | Markdown | Engineering personas (Product Manager, Principal Engineer) added on top of `@chankov/agent-skills`, bound to fleet tiers |
+| [`tools/`](tools/) | Python | Operational scripts (e.g. `bench_embed.py` — embedding-endpoint latency benchmark) |
 | `pi/` | — | Upstream Pi clone, reference only (not part of this repo) |
 
 ## Quick start (M1)
@@ -30,3 +32,20 @@ cd fleetd && pip install -e . && fleetd serve
 cd pi-ext && npm install
 ln -s "$(pwd)" ~/.pi/agent/extensions/divide-and-conquer
 ```
+
+## Engineering personas (M5)
+
+We adopt [`@chankov/agent-skills`](https://pi.dev/packages/@chankov/agent-skills)
+(15 personas with per-persona model switching) rather than build our own, and extend it:
+
+```bash
+npx @chankov/agent-skills init        # installs the 15 stock personas into agents/
+```
+
+- **Added roles**: [Product Manager](agents/product-manager.md) and
+  [Principal Engineer](agents/principal-engineer.md) — the two the package lacks —
+  bound to the largest fleet models (`fleet/tier:s0`/`tier:s1`).
+- **Tier bindings**: [`.ai/agent-skills-overrides.md`](.ai/agent-skills-overrides.md)
+  maps every persona's model to a fleet squad tier. Referencing a `fleet/tier:*`
+  model means persona subagents route through the custom router (complexity + cache
+  affinity) just like interactive sessions.

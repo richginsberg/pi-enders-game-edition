@@ -32,8 +32,49 @@ model_list:
     model_info:
       dnc_squad: s0
 
-  # tier:auto is resolved by the custom strategy; give it every deployment.
-  # (LiteLLM requires the alias to exist; the strategy filters by dnc_squad.)
+  # --- S2: mid squad, Qwen3 7B-32B via vLLM (V100 / single 3090) ---
+  - model_name: tier:s2
+    litellm_params:
+      model: openai/qwen3-8b
+      api_base: os.environ/DNC_S2_API_BASE
+      api_key: none
+    model_info:
+      dnc_squad: s2
+
+  # --- S3: wide/cheap squad, Qwen3 4B q4 via llama.cpp (Pascal / BC-250) ---
+  - model_name: tier:s3
+    litellm_params:
+      model: openai/qwen3-4b
+      api_base: os.environ/DNC_S3_API_BASE
+      api_key: none
+    model_info:
+      dnc_squad: s3
+
+  # --- embeddings: Qwen3-Embedding-0.6B (S3 GPU node / 9700T CPU / DeepInfra) ---
+  # Provider chosen by whichever DNC_EMBED_API_BASE points at; see tools/bench_embed.py.
+  - model_name: embed:qwen3
+    litellm_params:
+      model: openai/qwen3-embedding-0.6b
+      api_base: os.environ/DNC_EMBED_API_BASE
+      api_key: os.environ/DNC_EMBED_API_KEY   # "none" for self-host; real key only for DeepInfra
+    model_info:
+      dnc_squad: s3
+      mode: embedding
+
+  # tier:auto is resolved by the custom strategy: register every squad deployment
+  # under it; pick_tier() chooses the squad, then the strategy filters by dnc_squad.
+  - model_name: tier:auto
+    litellm_params: { model: openai/glm-4.7, api_base: https://api.z.ai/api/paas/v4, api_key: os.environ/GLM_API_KEY }
+    model_info: { dnc_squad: s0 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/step-3.5-flash, api_base: os.environ/DNC_S1_API_BASE, api_key: none }
+    model_info: { dnc_squad: s1 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/qwen3-8b, api_base: os.environ/DNC_S2_API_BASE, api_key: none }
+    model_info: { dnc_squad: s2 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/qwen3-4b, api_base: os.environ/DNC_S3_API_BASE, api_key: none }
+    model_info: { dnc_squad: s3 }
 
 router_settings:
   routing_strategy: "custom"
