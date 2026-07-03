@@ -106,10 +106,12 @@ def to_deployment(host: Host, server: DiscoveredServer) -> Deployment:
         context_window=int(server.facts.get("ctx", 0)) or 32768,
         port=server.port,
         management=Management.ADOPTED,
+        model_path=server.facts.get("model"),
         discovered={
             "cmdline": server.cmdline,
             "binary": server.binary,
             "runner": server.runner,
+            "pid": str(server.pid),  # basis for stopping a bare process during migration
             **({"unit": server.unit} if server.unit else {}),
             **server.facts,
         },

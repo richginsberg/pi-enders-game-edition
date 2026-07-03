@@ -11,6 +11,7 @@ Lifecycle rules:
 
 from __future__ import annotations
 
+import posixpath
 import shlex
 from dataclasses import dataclass, field
 
@@ -42,11 +43,16 @@ def container_name(dep: Deployment) -> str:
     return f"dnc-{dep.id}"
 
 
+def model_ref(dep: Deployment) -> str:
+    """In-container path to the model file/dir the server should load."""
+    return dep.model_path or f"{MODELS_DIR}/{dep.model_id}"
+
+
 def server_args(host: Host, dep: Deployment) -> list[str]:
     """Inference-server CLI args from the deployment spec."""
     if dep.server == ServerKind.LLAMACPP:
         args = [
-            "-m", f"{MODELS_DIR}/{dep.model_id}",
+            "-m", model_ref(dep),
             "--host", "0.0.0.0",
             "--port", str(dep.port),
             "-c", str(dep.context_window),
@@ -57,7 +63,7 @@ def server_args(host: Host, dep: Deployment) -> list[str]:
             args += ["--split-mode", "layer"]
     elif dep.server == ServerKind.VLLM:
         args = [
-            "--model", dep.model_id,
+            "--model", model_ref(dep),
             "--host", "0.0.0.0",
             "--port", str(dep.port),
             "--max-model-len", str(dep.context_window),
@@ -75,13 +81,16 @@ def docker_run_command(host: Host, dep: Deployment) -> str:
     """Render the idempotent (re)create command for a managed deployment."""
     name = container_name(dep)
     gpu_flag = "--device=/dev/kfd --device=/dev/dri" if host.gpu_arch == GpuArch.RDNA2_BC250 else "--gpus all"
+    # Mount the shared model store, or the existing model's own dir when reusing an
+    # on-disk model (migration). Same path inside and out so model_ref() resolves.
+    mount_dir = posixpath.dirname(dep.model_path) if dep.model_path else MODELS_DIR
     parts = [
         f"docker rm -f {name} >/dev/null 2>&1 || true;",
         "docker run -d",
         f"--name {name}",
         "--restart unless-stopped",
         gpu_flag,
-        f"-v {MODELS_DIR}:{MODELS_DIR}:ro",
+        f"-v {shlex.quote(mount_dir)}:{shlex.quote(mount_dir)}:ro",
         f"-p {dep.port}:{dep.port}",
         "--label dnc.managed=true",
         f"--label dnc.deployment={dep.id}",
@@ -123,6 +132,12 @@ async def preflight(host: Host) -> dict:
 
 async def ensure_model(host: Host, dep: Deployment, report: PlayReport) -> None:
     """Download the model to MODELS_DIR if absent (converges; hf CLI resumes)."""
+    # Migration reuses a model already on disk: verify it's there, never download.
+    if dep.model_path:
+        exists = await run(host, f"test -e {shlex.quote(dep.model_path)}")
+        ok = exists.exit_status == 0
+        report.step("model", ok, "reusing on-disk model" if ok else f"missing {dep.model_path}")
+        return
     target = f"{MODELS_DIR}/{dep.model_id}"
     exists = await run(host, f"test -e {shlex.quote(target)}")
     if exists.exit_status == 0:
@@ -184,3 +199,99 @@ async def stop(host: Host, dep: Deployment) -> PlayReport:
     proc = await run(host, f"docker rm -f {container_name(dep)}")
     report.step("stop", proc.exit_status == 0, proc.stderr or "")
     return report
+
+
+# -- migration: adopted server -> standard managed Docker deployment ----------------
+def plan_migration(adopted: Deployment, *, new_port: int, target_version: str = "latest") -> Deployment:
+    """Derive an equivalent managed Docker deployment from an adopted server's facts.
+
+    Reuses the model already on disk (model_path) so no re-download is needed, and
+    binds to a fresh port so the standard container can run side-by-side with the
+    old server until cutover verifies.
+    """
+    return Deployment(
+        id=f"mig-{adopted.host_id}-{new_port}",
+        host_id=adopted.host_id,
+        server=adopted.server,
+        server_version=target_version,
+        model_id=adopted.model_id,
+        model_path=adopted.model_path or adopted.discovered.get("model"),
+        quant=adopted.quant,
+        context_window=adopted.context_window,
+        port=new_port,
+        management=Management.DOCKER,
+    )
+
+
+def migration_diff(host: Host, adopted: Deployment, proposed: Deployment) -> list[dict]:
+    """Field-by-field before/after for the TUI preview (task #10)."""
+    d = adopted.discovered
+    rows = [
+        ("runner", d.get("runner", "bare"), "docker (--restart unless-stopped)"),
+        ("image", d.get("binary", "custom build"), image_ref(host, proposed)),
+        ("version", d.get("version", "unknown"), proposed.server_version),
+        ("port", str(adopted.port), str(proposed.port)),
+        ("model", proposed.model_path or proposed.model_id, "(reused, no re-download)"),
+        ("server_cmd", d.get("cmdline", ""), " ".join(server_args(host, proposed))),
+    ]
+    return [{"field": f, "from": a, "to": b} for f, a, b in rows if str(a) != str(b)]
+
+
+def stop_adopted_command(adopted: Deployment) -> str:
+    """Render the command to stop the OLD adopted server, by how it's kept alive.
+
+    This is the one sanctioned place a play touches an adopted process, and only
+    mid-migration after the managed replacement is verified healthy.
+    """
+    d = adopted.discovered
+    runner, unit, pid = d.get("runner", "bare"), d.get("unit"), d.get("pid")
+    if runner == "docker" and unit:
+        return f"docker rm -f {shlex.quote(unit)}"
+    if runner == "systemd" and unit:
+        return f"systemctl stop {shlex.quote(unit)}"
+    if pid:
+        return f"kill {int(pid)}"
+    raise ValueError(f"cannot stop adopted server {adopted.id}: no unit or pid recorded")
+
+
+async def stop_adopted(host: Host, adopted: Deployment) -> PlayReport:
+    report = PlayReport(play="stop_adopted", host_id=host.id)
+    if adopted.management not in (Management.ADOPTED, Management.MIGRATING):
+        report.step("guard", False, f"stop_adopted only for adopted/migrating (got {adopted.management})")
+        return report
+    proc = await run(host, stop_adopted_command(adopted))
+    report.step("stop_adopted", proc.exit_status == 0, proc.stderr or "")
+    return report
+
+
+async def migrate(
+    host: Host, adopted: Deployment, *, new_port: int, target_version: str = "latest"
+) -> tuple[PlayReport, Deployment]:
+    """Cutover an adopted server to a standard managed deployment, side-by-side.
+
+    Deploy the standard container on a fresh port, verify it's healthy, and only
+    then stop the old server. Returns the report and the (now-live) managed
+    Deployment so the caller can persist it and flip LiteLLM registration.
+    """
+    report = PlayReport(play="migrate", host_id=host.id)
+    if adopted.management not in (Management.ADOPTED, Management.MIGRATING):
+        report.step("guard", False, f"migrate expects an adopted server (got {adopted.management})")
+        return report, adopted
+
+    proposed = plan_migration(adopted, new_port=new_port, target_version=target_version)
+
+    # Bring up the standard container beside the old one (deploy() runs its own steps).
+    deploy_report = await deploy(host, proposed)
+    report.steps.extend(deploy_report.steps)
+    report.ok = report.ok and deploy_report.ok
+    if not report.ok:
+        report.step("cutover", False, "aborting: managed replacement not healthy; old server left running")
+        return report, adopted
+
+    # Replacement verified healthy -> stop the old server. (LiteLLM flip is the
+    # caller's job via litellm_sync — TODO M3.)
+    stop_report = await stop_adopted(host, adopted)
+    report.steps.extend(stop_report.steps)
+    report.ok = report.ok and stop_report.ok
+    report.step("cutover", report.ok, "migrated to managed deployment" if report.ok else "old server stop failed")
+    return report, proposed

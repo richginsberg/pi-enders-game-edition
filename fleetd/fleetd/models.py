@@ -62,6 +62,10 @@ class Deployment(BaseModel):
     server: ServerKind
     server_version: str  # image tag or release, e.g. "vllm/vllm-openai:v0.8.4"
     model_id: str        # e.g. "stepfun-ai/Step-3.5-Flash-GGUF"
+    # Absolute path to an existing on-disk model (bind-mounted instead of the shared
+    # MODELS_DIR). Set by migration to reuse a GGUF already present from a custom
+    # local build, avoiding a multi-GB re-download. None -> pull into MODELS_DIR.
+    model_path: str | None = None
     quant: str | None = None
     context_window: int = 32768
     port: int = 8000

@@ -89,3 +89,106 @@ async def test_deploy_refuses_adopted():
 
 def test_container_name():
     assert container_name(vllm_dep("v100-a")) == "dnc-v100-a-qwen8b"
+
+
+# -- migration ----------------------------------------------------------------------
+def adopted_step(runner="bare", **discovered) -> Deployment:
+    """An adopted Step-3.5-Flash server, as discovery would catalog it."""
+    d = {
+        "runner": runner, "pid": "4242", "binary": "/opt/llama.cpp/llama-server",
+        "cmdline": "/opt/llama.cpp/llama-server -m /srv/models/Step-3.5-Flash-Q3_K_M.gguf --port 5000",
+        "model": "/srv/models/Step-3.5-Flash-Q3_K_M.gguf", "version": "b4823",
+        **discovered,
+    }
+    return Deployment(
+        id="adopted-rig-3090-a-5000", host_id="rig-3090-a", server=ServerKind.LLAMACPP,
+        server_version="b4823", model_id="step-3.5-flash-q3_k_m.gguf",
+        model_path="/srv/models/Step-3.5-Flash-Q3_K_M.gguf",
+        context_window=65536, port=5000, management=Management.ADOPTED, discovered=d,
+    )
+
+
+def test_plan_migration_reuses_model_and_new_port():
+    from fleetd.plays import plan_migration
+
+    proposed = plan_migration(adopted_step(), new_port=8080, target_version="server-cuda-b4823")
+    assert proposed.management == Management.DOCKER
+    assert proposed.port == 8080  # side-by-side, not the adopted 5000
+    assert proposed.model_path == "/srv/models/Step-3.5-Flash-Q3_K_M.gguf"  # reused, no download
+    assert proposed.server_version == "server-cuda-b4823"
+
+
+def test_migrated_container_mounts_existing_model_dir_not_models_dir():
+    from fleetd.plays import docker_run_command, plan_migration, server_args
+
+    proposed = plan_migration(adopted_step(), new_port=8080)
+    cmd = docker_run_command(AMPERE_RIG, proposed)
+    assert "-v /srv/models:/srv/models:ro" in cmd  # existing dir, not /opt/dnc/models
+    assert "/opt/dnc/models" not in cmd
+    args = server_args(AMPERE_RIG, proposed)
+    assert args[args.index("-m") + 1] == "/srv/models/Step-3.5-Flash-Q3_K_M.gguf"
+
+
+def test_migration_diff_reports_runner_and_port_change():
+    from fleetd.plays import migration_diff, plan_migration
+
+    adopted = adopted_step(runner="systemd", unit="stepfun.service")
+    proposed = plan_migration(adopted, new_port=8080)
+    fields = {r["field"]: r for r in migration_diff(AMPERE_RIG, adopted, proposed)}
+    assert fields["runner"]["from"] == "systemd" and "docker" in fields["runner"]["to"]
+    assert fields["port"]["from"] == "5000" and fields["port"]["to"] == "8080"
+
+
+def test_stop_adopted_command_per_runner():
+    from fleetd.plays import stop_adopted_command
+
+    assert stop_adopted_command(adopted_step(runner="docker", unit="stepfun")) == "docker rm -f stepfun"
+    assert stop_adopted_command(adopted_step(runner="systemd", unit="s.service")) == "systemctl stop s.service"
+    assert stop_adopted_command(adopted_step(runner="bare")) == "kill 4242"
+
+
+def test_stop_adopted_command_needs_handle():
+    import pytest as _pytest
+
+    from fleetd.plays import stop_adopted_command
+
+    orphan = adopted_step(runner="bare")
+    orphan.discovered.pop("pid")
+    with _pytest.raises(ValueError):
+        stop_adopted_command(orphan)
+
+
+@pytest.mark.asyncio
+async def test_migrate_refuses_managed_deployment():
+    from fleetd.plays import migrate
+
+    managed = llamacpp_dep("rig-3090-a")  # management defaults to DOCKER
+    report, out = await migrate(AMPERE_RIG, managed, new_port=8080)  # returns before SSH
+    assert report.ok is False
+    assert report.steps[0]["name"] == "guard"
+    assert out is managed  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_migrate_leaves_old_server_running_if_replacement_unhealthy(monkeypatch):
+    """Cutover must not stop the adopted server unless the managed one is healthy."""
+    from fleetd import plays
+
+    stopped = []
+
+    async def fake_deploy(host, dep):
+        r = plays.PlayReport(play="deploy", host_id=host.id)
+        r.step("start", False, "boom")  # replacement failed to come up
+        return r
+
+    async def fake_stop_adopted(host, dep):
+        stopped.append(dep.id)
+        return plays.PlayReport(play="stop_adopted", host_id=host.id)
+
+    monkeypatch.setattr(plays, "deploy", fake_deploy)
+    monkeypatch.setattr(plays, "stop_adopted", fake_stop_adopted)
+
+    report, out = await plays.migrate(AMPERE_RIG, adopted_step(), new_port=8080)
+    assert report.ok is False
+    assert stopped == []  # old server never touched
+    assert out.management == Management.ADOPTED  # returned the still-live adopted server
