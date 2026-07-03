@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import posixpath
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import asyncssh
@@ -106,10 +107,16 @@ class PlayReport:
     host_id: str
     steps: list[dict] = field(default_factory=list)
     ok: bool = True
+    # Optional sink invoked with each step dict as it happens (for live streaming).
+    # Sync callback, called from the play's event loop — e.g. queue.put_nowait.
+    on_step: Callable[[dict], None] | None = None
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
-        self.steps.append({"name": name, "ok": ok, "detail": detail.strip()[-2000:]})
+        entry = {"name": name, "ok": ok, "detail": detail.strip()[-2000:]}
+        self.steps.append(entry)
         self.ok = self.ok and ok
+        if self.on_step is not None:
+            self.on_step(entry)
 
 
 async def run(host: Host, command: str) -> asyncssh.SSHCompletedProcess:
@@ -165,9 +172,9 @@ async def wait_healthy(host: Host, dep: Deployment, report: PlayReport, timeout_
     report.step("health", proc.exit_status == 0, "" if proc.exit_status == 0 else "health check timed out")
 
 
-async def deploy(host: Host, dep: Deployment) -> PlayReport:
+async def deploy(host: Host, dep: Deployment, *, on_step: Callable[[dict], None] | None = None) -> PlayReport:
     """Deploy or upgrade an inference server container. Idempotent by container name."""
-    report = PlayReport(play="deploy", host_id=host.id)
+    report = PlayReport(play="deploy", host_id=host.id, on_step=on_step)
     if dep.management != Management.DOCKER:
         report.step("guard", False, f"refusing to deploy management={dep.management} (adopted servers are monitor-only)")
         return report
@@ -191,8 +198,8 @@ async def deploy(host: Host, dep: Deployment) -> PlayReport:
     return report
 
 
-async def stop(host: Host, dep: Deployment) -> PlayReport:
-    report = PlayReport(play="stop", host_id=host.id)
+async def stop(host: Host, dep: Deployment, *, on_step: Callable[[dict], None] | None = None) -> PlayReport:
+    report = PlayReport(play="stop", host_id=host.id, on_step=on_step)
     if dep.management != Management.DOCKER:
         report.step("guard", False, "adopted servers are never stopped by plays")
         return report
@@ -254,8 +261,10 @@ def stop_adopted_command(adopted: Deployment) -> str:
     raise ValueError(f"cannot stop adopted server {adopted.id}: no unit or pid recorded")
 
 
-async def stop_adopted(host: Host, adopted: Deployment) -> PlayReport:
-    report = PlayReport(play="stop_adopted", host_id=host.id)
+async def stop_adopted(
+    host: Host, adopted: Deployment, *, on_step: Callable[[dict], None] | None = None
+) -> PlayReport:
+    report = PlayReport(play="stop_adopted", host_id=host.id, on_step=on_step)
     if adopted.management not in (Management.ADOPTED, Management.MIGRATING):
         report.step("guard", False, f"stop_adopted only for adopted/migrating (got {adopted.management})")
         return report
@@ -265,7 +274,12 @@ async def stop_adopted(host: Host, adopted: Deployment) -> PlayReport:
 
 
 async def migrate(
-    host: Host, adopted: Deployment, *, new_port: int, target_version: str = "latest"
+    host: Host,
+    adopted: Deployment,
+    *,
+    new_port: int,
+    target_version: str = "latest",
+    on_step: Callable[[dict], None] | None = None,
 ) -> tuple[PlayReport, Deployment]:
     """Cutover an adopted server to a standard managed deployment, side-by-side.
 
@@ -273,15 +287,16 @@ async def migrate(
     then stop the old server. Returns the report and the (now-live) managed
     Deployment so the caller can persist it and flip LiteLLM registration.
     """
-    report = PlayReport(play="migrate", host_id=host.id)
+    report = PlayReport(play="migrate", host_id=host.id, on_step=on_step)
     if adopted.management not in (Management.ADOPTED, Management.MIGRATING):
         report.step("guard", False, f"migrate expects an adopted server (got {adopted.management})")
         return report, adopted
 
     proposed = plan_migration(adopted, new_port=new_port, target_version=target_version)
 
-    # Bring up the standard container beside the old one (deploy() runs its own steps).
-    deploy_report = await deploy(host, proposed)
+    # Bring up the standard container beside the old one. Pass the sink so its steps
+    # stream live; extend() then copies them into this report without re-emitting.
+    deploy_report = await deploy(host, proposed, on_step=on_step)
     report.steps.extend(deploy_report.steps)
     report.ok = report.ok and deploy_report.ok
     if not report.ok:
@@ -290,7 +305,7 @@ async def migrate(
 
     # Replacement verified healthy -> stop the old server. (LiteLLM flip is the
     # caller's job via litellm_sync — TODO M3.)
-    stop_report = await stop_adopted(host, adopted)
+    stop_report = await stop_adopted(host, adopted, on_step=on_step)
     report.steps.extend(stop_report.steps)
     report.ok = report.ok and stop_report.ok
     report.step("cutover", report.ok, "migrated to managed deployment" if report.ok else "old server stop failed")

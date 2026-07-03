@@ -12,7 +12,7 @@
  *        -> none / "new model": fresh deploy (server, version, model, quant, ctx, port)
  */
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { fleetdGet, fleetdSend } from "./config.js";
+import { fleetdGet, fleetdSend, fleetdStream } from "./config.js";
 
 interface HostRow {
   id: string;
@@ -38,26 +38,53 @@ interface PlayStep {
   detail: string;
 }
 
-interface PlayResult {
-  ok: boolean;
-  steps: PlayStep[];
-}
-
 interface DiffRow {
   field: string;
   from: string;
   to: string;
 }
 
+/** An SSE event from a fleetd play stream: a step, or the terminating done/error frame. */
+type PlayEvent =
+  | ({ type?: "step" } & PlayStep)
+  | { type: "done"; ok: boolean; managed_id?: string | null }
+  | { type: "error"; detail: string };
+
 const SQUADS = ["s0", "s1", "s2", "s3"];
 const GPU_ARCHES = ["pascal", "volta", "ampere", "bc250"];
 const SERVER_KINDS = ["llamacpp", "vllm"];
 
-/** Render a play's steps into the deploy widget (fleetd runs the play synchronously). */
-function renderSteps(ui: ExtensionUIContext, title: string, result: PlayResult): void {
-  const lines = [title, ...result.steps.map((s) => `  ${s.ok ? "✓" : "✗"} ${s.name}${s.detail ? ` — ${s.detail}` : ""}`)];
-  lines.push(result.ok ? "done." : "FAILED — see steps above.");
-  ui.setWidget("dnc-deploy", lines);
+/** Run a fleetd play over SSE, re-rendering the widget as each step arrives. Returns final ok. */
+async function streamPlay(
+  ui: ExtensionUIContext,
+  title: string,
+  method: "POST",
+  path: string,
+): Promise<boolean> {
+  const steps: PlayStep[] = [];
+  let done = false;
+  let ok = false;
+
+  const render = (footer: string) => {
+    const lines = [title, ...steps.map((s) => `  ${s.ok ? "✓" : "✗"} ${s.name}${s.detail ? ` — ${s.detail}` : ""}`)];
+    lines.push(footer);
+    ui.setWidget("dnc-deploy", lines);
+  };
+  render("running…");
+
+  for await (const ev of fleetdStream<PlayEvent>(method, path)) {
+    if (ev.type === "done") {
+      done = true;
+      ok = ev.ok;
+    } else if (ev.type === "error") {
+      steps.push({ name: "error", ok: false, detail: ev.detail });
+    } else {
+      steps.push(ev as PlayStep);
+      render("running…");
+    }
+  }
+  render(!done ? "stream ended early." : ok ? "done." : "FAILED — see steps above.");
+  return done && ok;
 }
 
 /** Pick an existing host, or add + preflight a new one. Returns undefined on cancel. */
@@ -122,9 +149,7 @@ async function handleAdopted(ui: ExtensionUIContext, host: HostRow, dep: Deploym
     return;
   }
 
-  ui.setWidget("dnc-deploy", [`migrating ${dep.id} → :${newPort}…`, "(deploy → health-check → cutover)"]);
-  const result = await fleetdSend<PlayResult>("POST", `/deployments/${dep.id}/migrate?${q}`);
-  renderSteps(ui, `migrate ${dep.id}`, result);
+  await streamPlay(ui, `migrate ${dep.id} → :${newPort}`, "POST", `/deployments/${dep.id}/migrate/stream?${q}`);
 }
 
 /** Fresh deploy of a new model onto a host. */
@@ -166,9 +191,7 @@ async function freshDeploy(ui: ExtensionUIContext, host: HostRow): Promise<void>
   }
 
   await fleetdSend("PUT", `/deployments/${depId}`, dep);
-  ui.setWidget("dnc-deploy", [...summary, "", "running play… (pull → model → start → health)"]);
-  const result = await fleetdSend<PlayResult>("POST", `/deployments/${depId}/apply`);
-  renderSteps(ui, `deploy ${depId}`, result);
+  await streamPlay(ui, `deploy ${depId}`, "POST", `/deployments/${depId}/apply/stream`);
 }
 
 export function registerDeployCommand(pi: ExtensionAPI): void {

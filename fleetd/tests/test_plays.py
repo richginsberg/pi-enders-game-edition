@@ -169,6 +169,44 @@ async def test_migrate_refuses_managed_deployment():
     assert out is managed  # unchanged
 
 
+def test_playreport_sink_fires_per_step_live():
+    from fleetd.plays import PlayReport
+
+    seen = []
+    r = PlayReport(play="x", host_id="h", on_step=seen.append)
+    r.step("a", True)
+    assert seen == [{"name": "a", "ok": True, "detail": ""}]  # emitted immediately, not at the end
+    r.step("b", False, "boom")
+    assert [s["name"] for s in seen] == ["a", "b"]
+    assert seen is not r.steps and seen == r.steps  # sink got copies-in-order matching the report
+
+
+@pytest.mark.asyncio
+async def test_migrate_streams_substeps_through_sink(monkeypatch):
+    """migrate() must relay its sub-plays' steps through the sink, in order, once each."""
+    from fleetd import plays
+
+    async def fake_deploy(host, dep, *, on_step=None):
+        r = plays.PlayReport(play="deploy", host_id=host.id, on_step=on_step)
+        r.step("pull", True)
+        r.step("health", True)
+        return r
+
+    async def fake_stop_adopted(host, dep, *, on_step=None):
+        r = plays.PlayReport(play="stop_adopted", host_id=host.id, on_step=on_step)
+        r.step("stop_adopted", True)
+        return r
+
+    monkeypatch.setattr(plays, "deploy", fake_deploy)
+    monkeypatch.setattr(plays, "stop_adopted", fake_stop_adopted)
+
+    streamed = []
+    report, _ = await plays.migrate(AMPERE_RIG, adopted_step(), new_port=8080, on_step=streamed.append)
+    assert report.ok is True
+    # sub-play steps arrive live, then migrate's own cutover — each exactly once
+    assert [s["name"] for s in streamed] == ["pull", "health", "stop_adopted", "cutover"]
+
+
 @pytest.mark.asyncio
 async def test_migrate_leaves_old_server_running_if_replacement_unhealthy(monkeypatch):
     """Cutover must not stop the adopted server unless the managed one is healthy."""
@@ -176,12 +214,12 @@ async def test_migrate_leaves_old_server_running_if_replacement_unhealthy(monkey
 
     stopped = []
 
-    async def fake_deploy(host, dep):
-        r = plays.PlayReport(play="deploy", host_id=host.id)
+    async def fake_deploy(host, dep, *, on_step=None):
+        r = plays.PlayReport(play="deploy", host_id=host.id, on_step=on_step)
         r.step("start", False, "boom")  # replacement failed to come up
         return r
 
-    async def fake_stop_adopted(host, dep):
+    async def fake_stop_adopted(host, dep, *, on_step=None):
         stopped.append(dep.id)
         return plays.PlayReport(play="stop_adopted", host_id=host.id)
 

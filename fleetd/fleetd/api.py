@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 
 from .db import Db
 from .models import Deployment, Host, Management, TaskRecord
@@ -15,6 +19,50 @@ DB_PATH = Path(os.environ.get("FLEETD_DB", "~/.local/share/fleetd/fleet.sqlite3"
 
 app = FastAPI(title="fleetd", version="0.1.0")
 db = Db(DB_PATH)
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+async def stream_play(runner: Callable[[Callable[[dict], None]], Awaitable[dict]]) -> StreamingResponse:
+    """Drive a play in a task, relaying each step as a Server-Sent Event.
+
+    `runner(sink)` runs the play (passing `sink` as the play's on_step) and returns
+    a dict of final fields merged into the terminating `done` event. Steps arrive as
+    {"type":"step",...}; the stream ends with {"type":"done",...} or {"type":"error"}.
+    """
+    queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+    async def drive() -> None:
+        try:
+            final = await runner(queue.put_nowait)  # sink pushes step dicts as they happen
+            queue.put_nowait({"type": "done", **final})
+        except Exception as exc:  # surface play failures to the client, don't hang the stream
+            queue.put_nowait({"type": "error", "detail": str(exc)})
+        finally:
+            queue.put_nowait(None)  # sentinel: generator stops
+
+    task = asyncio.create_task(drive())
+
+    async def gen() -> AsyncIterator[str]:
+        try:
+            while (item := await queue.get()) is not None:
+                yield _sse({"type": "step", **item} if "type" not in item else item)
+        finally:
+            await task
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+def _resolve(dep_id: str) -> tuple[Deployment, Host]:
+    dep = next((d for d in db.list_deployments() if d.id == dep_id), None)
+    if dep is None:
+        raise HTTPException(404, f"unknown deployment {dep_id}")
+    host = next((h for h in db.list_hosts() if h.id == dep.host_id), None)
+    if host is None:
+        raise HTTPException(409, f"deployment references unknown host {dep.host_id}")
+    return dep, host
 
 
 @app.get("/healthz")
@@ -54,13 +102,7 @@ async def apply_deployment(dep_id: str) -> dict:
     """Run the deploy play (pull image, fetch model, replace container, health poll)."""
     from . import plays
 
-    dep = next((d for d in db.list_deployments() if d.id == dep_id), None)
-    if dep is None:
-        raise HTTPException(404, f"unknown deployment {dep_id}")
-    host = next((h for h in db.list_hosts() if h.id == dep.host_id), None)
-    if host is None:
-        raise HTTPException(409, f"deployment references unknown host {dep.host_id}")
-
+    dep, host = _resolve(dep_id)
     dep.status = "deploying"
     db.upsert_deployment(dep)
     report = await plays.deploy(host, dep)
@@ -68,6 +110,24 @@ async def apply_deployment(dep_id: str) -> dict:
     db.upsert_deployment(dep)
     # TODO(task #8/#10): on success register the model with LiteLLM (litellm_sync).
     return {"ok": report.ok, "steps": report.steps}
+
+
+@app.post("/deployments/{dep_id}/apply/stream")
+async def apply_deployment_stream(dep_id: str) -> StreamingResponse:
+    """Same as /apply, but streams each play step as it happens (Server-Sent Events)."""
+    from . import plays
+
+    dep, host = _resolve(dep_id)  # raise before the stream opens, so 404s stay clean
+
+    async def runner(sink: Callable[[dict], None]) -> dict:
+        dep.status = "deploying"
+        db.upsert_deployment(dep)
+        report = await plays.deploy(host, dep, on_step=sink)
+        dep.status = "healthy" if report.ok else "unhealthy"
+        db.upsert_deployment(dep)
+        return {"ok": report.ok}
+
+    return await stream_play(runner)
 
 
 @app.post("/hosts/{host_id}/preflight")
@@ -107,41 +167,53 @@ def migration_plan(dep_id: str, new_port: int, target_version: str = "latest") -
     """Preview the standard deployment an adopted server would migrate to (task #10 diff)."""
     from . import plays
 
-    dep = next((d for d in db.list_deployments() if d.id == dep_id), None)
-    if dep is None:
-        raise HTTPException(404, f"unknown deployment {dep_id}")
-    host = next((h for h in db.list_hosts() if h.id == dep.host_id), None)
-    if host is None:
-        raise HTTPException(409, f"deployment references unknown host {dep.host_id}")
+    dep, host = _resolve(dep_id)
     proposed = plays.plan_migration(dep, new_port=new_port, target_version=target_version)
     return {"proposed": proposed.model_dump(), "diff": plays.migration_diff(host, dep, proposed)}
 
 
-@app.post("/deployments/{dep_id}/migrate")
-async def migrate_deployment(dep_id: str, new_port: int, target_version: str = "latest") -> dict:
-    """Migrate an adopted server to a standard managed Docker deployment (cutover)."""
+async def _run_migration(
+    dep: Deployment, host: Host, new_port: int, target_version: str,
+    on_step: Callable[[dict], None] | None = None,
+) -> tuple[bool, str | None]:
+    """Persist the migration lifecycle around the play. Returns (ok, managed_id)."""
     from . import plays
-
-    dep = next((d for d in db.list_deployments() if d.id == dep_id), None)
-    if dep is None:
-        raise HTTPException(404, f"unknown deployment {dep_id}")
-    host = next((h for h in db.list_hosts() if h.id == dep.host_id), None)
-    if host is None:
-        raise HTTPException(409, f"deployment references unknown host {dep.host_id}")
 
     dep.management = Management.MIGRATING
     db.upsert_deployment(dep)
-    report, managed = await plays.migrate(host, dep, new_port=new_port, target_version=target_version)
+    report, managed = await plays.migrate(
+        host, dep, new_port=new_port, target_version=target_version, on_step=on_step
+    )
     if report.ok:
         managed.status = "healthy"
         db.upsert_deployment(managed)
         dep.status = "stopped"
         db.upsert_deployment(dep)  # keep the adopted record as history, marked stopped
         # TODO(M3): register `managed` with LiteLLM and drop the old registration (litellm_sync).
-    else:
-        dep.management = Management.ADOPTED  # roll back: old server is still the live one
-        db.upsert_deployment(dep)
-    return {"ok": report.ok, "steps": report.steps, "managed_id": managed.id if report.ok else None}
+        return True, managed.id
+    dep.management = Management.ADOPTED  # roll back: old server is still the live one
+    db.upsert_deployment(dep)
+    return False, None
+
+
+@app.post("/deployments/{dep_id}/migrate")
+async def migrate_deployment(dep_id: str, new_port: int, target_version: str = "latest") -> dict:
+    """Migrate an adopted server to a standard managed Docker deployment (cutover)."""
+    dep, host = _resolve(dep_id)
+    ok, managed_id = await _run_migration(dep, host, new_port, target_version)
+    return {"ok": ok, "managed_id": managed_id}
+
+
+@app.post("/deployments/{dep_id}/migrate/stream")
+async def migrate_deployment_stream(dep_id: str, new_port: int, target_version: str = "latest") -> StreamingResponse:
+    """Same as /migrate, but streams each cutover step as it happens (Server-Sent Events)."""
+    dep, host = _resolve(dep_id)
+
+    async def runner(sink: Callable[[dict], None]) -> dict:
+        ok, managed_id = await _run_migration(dep, host, new_port, target_version, on_step=sink)
+        return {"ok": ok, "managed_id": managed_id}
+
+    return await stream_play(runner)
 
 
 # -- task ledger -----------------------------------------------------------------
