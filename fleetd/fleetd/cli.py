@@ -29,5 +29,22 @@ def preflight(address: str, user: str = "root") -> None:
         typer.echo(f"{name}: {status} — {r['output']}")
 
 
+@app.command()
+def discover(address: str, user: str = "root") -> None:
+    """Find pre-existing inference servers on a host (dry run, no cataloging)."""
+    import asyncio
+
+    from .discover import discover_host
+    from .models import Host, Squad
+
+    h = Host(id="adhoc", address=address, ssh_user=user, squad=Squad.S3_WIDE)
+    for dep in asyncio.run(discover_host(h)):
+        typer.echo(
+            f"{dep.server} :{dep.port} model={dep.model_id} "
+            f"runner={dep.discovered.get('runner')} version={dep.server_version}"
+        )
+        typer.echo(f"  cmdline: {dep.discovered.get('cmdline')}")
+
+
 if __name__ == "__main__":
     app()

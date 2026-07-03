@@ -51,6 +51,27 @@ def upsert_deployment(dep_id: str, dep: Deployment) -> Deployment:
     return dep
 
 
+# -- discovery / adoption -----------------------------------------------------------
+@app.post("/hosts/{host_id}/discover")
+async def discover(host_id: str) -> list[Deployment]:
+    """Find pre-existing inference servers on the host and catalog them as adopted.
+
+    Adopted deployments are monitor-only: plays never touch their lifecycle.
+    Use the migration flow (M3, task #8) to convert one to a managed deployment.
+    """
+    from . import discover as disc
+
+    host = next((h for h in db.list_hosts() if h.id == host_id), None)
+    if host is None:
+        raise HTTPException(404, f"unknown host {host_id}")
+    found = await disc.discover_host(host)
+    existing_ids = {d.id for d in db.list_deployments(host_id)}
+    for dep in found:
+        if dep.id not in existing_ids:  # don't clobber facts on re-discovery
+            db.upsert_deployment(dep)
+    return found
+
+
 # -- task ledger -----------------------------------------------------------------
 @app.get("/tasks")
 def list_tasks(status: str | None = None) -> list[TaskRecord]:

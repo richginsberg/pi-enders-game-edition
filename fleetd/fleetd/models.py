@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import BaseModel, Field
+
+
+class StrEnum(str, Enum):
+    """str+Enum base, compatible with Python 3.10 (enum.StrEnum is 3.11+)."""
+
+    def __str__(self) -> str:  # match enum.StrEnum behavior
+        return self.value
 
 
 class Squad(StrEnum):
@@ -18,6 +25,15 @@ class ServerKind(StrEnum):
     VLLM = "vllm"
     LLAMACPP = "llamacpp"
     API = "api"  # remote provider, no host
+
+
+class Management(StrEnum):
+    """Who owns the deployment's lifecycle."""
+
+    DOCKER = "docker"      # standard harness-managed container: full lifecycle
+    ADOPTED = "adopted"    # pre-existing server discovered on the host: monitor-only,
+                           # never upgraded/restarted by plays; drift is reported not fixed
+    MIGRATING = "migrating"  # adopted server with a managed replacement mid-cutover
 
 
 class GpuArch(StrEnum):
@@ -51,6 +67,10 @@ class Deployment(BaseModel):
     port: int = 8000
     extra_args: list[str] = Field(default_factory=list)
     status: str = "unknown"  # unknown|deploying|healthy|unhealthy|stopped
+    management: Management = Management.DOCKER
+    # Discovery facts for adopted servers: raw process cmdline, binary path,
+    # unit name (if systemd), detected version. Basis for migration diffs.
+    discovered: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskRecord(BaseModel):
