@@ -50,8 +50,12 @@ model_list:
     model_info:
       dnc_squad: s3
 
-  # --- embeddings: Qwen3-Embedding-0.6B (S3 GPU node / 9700T CPU / DeepInfra) ---
-  # Provider chosen by whichever DNC_EMBED_API_BASE points at; see tools/bench_embed.py.
+  # --- embeddings: Qwen3-Embedding-0.6B Q8_0 ---
+  # PRIMARY: self-hosted on the control-plane 9700T CPU (llama.cpp --embeddings).
+  # Benchmarked query p50 39ms / chunk p50 44ms with -t 4 — fast enough to be primary,
+  # not just a fallback (see tools/bench_embed.py, PLAN.md §6). A GPU node or DeepInfra
+  # is optional redundancy: add more embed:qwen3 entries and LiteLLM load-balances.
+  # Point DNC_EMBED_API_BASE at the local llama-server (e.g. http://127.0.0.1:8090/v1).
   - model_name: embed:qwen3
     litellm_params:
       model: openai/qwen3-embedding-0.6b
