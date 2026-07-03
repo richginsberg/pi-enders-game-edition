@@ -72,3 +72,9 @@ prompt is short/under-specified it calls the sidecar's `/recall` (passing the se
 cwd for partition resolution), injects the top matches into the system prompt, and
 shows a `pulled N context items` status. Override the sidecar URL with
 `DNC_CONTEXT_URL`. If the sidecar is down, the turn proceeds uninjected.
+
+**Salience-judge writes**: at the end of each response (`agent_end`, debounced) and
+on demand via `/remember`, the extension posts the new transcript to `/distill`. A
+cheap S3 judge (`DNC_JUDGE_MODEL`) extracts only durable facts — decisions,
+constraints, outcomes, handoffs — which are embedded and written to the repo
+partition. Chatter and low-value turns store nothing.
