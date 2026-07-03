@@ -1,2 +1,11 @@
 PLAN.md
 pi/
+node_modules/
+dist/
+__pycache__/
+*.egg-info/
+.venv/
+*.sqlite3
+*.db
+.env
+secrets/

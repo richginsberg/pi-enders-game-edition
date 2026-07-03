@@ -1,0 +1,11 @@
+{
+  "name": "dnc-harness",
+  "version": "0.1.0",
+  "description": "Relentless (Ralph-loop) task runner: DoD ledger, judge panel, fleet fan-out",
+  "type": "module",
+  "bin": { "dnc-run": "./src/cli.ts" },
+  "dependencies": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

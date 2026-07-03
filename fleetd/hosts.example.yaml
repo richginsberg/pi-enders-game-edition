@@ -1,0 +1,37 @@
+# Example fleet inventory — import with `fleetd hosts import hosts.yaml` (M3).
+hosts:
+  - id: rig-3090-a
+    address: 10.0.0.21
+    ssh_user: ml
+    squad: s1
+    gpu_arch: ampere
+    gpu_count: 4
+    vram_gb_per_gpu: 24
+    nic_gbps: 10
+
+  - id: v100-a
+    address: 10.0.0.31
+    ssh_user: ml
+    squad: s2
+    gpu_arch: volta
+    gpu_count: 1
+    vram_gb_per_gpu: 16
+    nic_gbps: 10
+
+  - id: pascal-a
+    address: 10.0.0.41
+    ssh_user: ml
+    squad: s3
+    gpu_arch: pascal
+    gpu_count: 2
+    vram_gb_per_gpu: 10
+    nic_gbps: 1
+
+  - id: bc250-01
+    address: 10.0.0.101
+    ssh_user: ml
+    squad: s3
+    gpu_arch: bc250
+    gpu_count: 1
+    vram_gb_per_gpu: 16
+    nic_gbps: 2.5
