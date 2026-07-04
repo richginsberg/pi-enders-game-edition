@@ -65,7 +65,8 @@ def test_bc250_uses_amd_devices_and_custom_image():
     dep = llamacpp_dep("bc250-01")
     dep.server_version = "latest"
     cmd = docker_run_command(BC250, dep)
-    assert "--device=/dev/kfd" in cmd
+    assert "--device /dev/dri" in cmd  # Vulkan/RADV render node, not ROCm /dev/kfd
+    assert "--group-add render" in cmd
     assert "--gpus all" not in cmd
     assert "dnc/llamacpp-bc250:latest" in cmd
 

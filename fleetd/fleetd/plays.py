@@ -81,7 +81,13 @@ def server_args(host: Host, dep: Deployment) -> list[str]:
 def docker_run_command(host: Host, dep: Deployment) -> str:
     """Render the idempotent (re)create command for a managed deployment."""
     name = container_name(dep)
-    gpu_flag = "--device=/dev/kfd --device=/dev/dri" if host.gpu_arch == GpuArch.RDNA2_BC250 else "--gpus all"
+    # BC-250 uses the Vulkan/RADV backend: it needs the DRM render node and the `render`
+    # group, NOT ROCm's /dev/kfd. Everything else uses the NVIDIA runtime.
+    gpu_flag = (
+        "--device /dev/dri --group-add render"
+        if host.gpu_arch == GpuArch.RDNA2_BC250
+        else "--gpus all"
+    )
     # Mount the shared model store, or the existing model's own dir when reusing an
     # on-disk model (migration). Same path inside and out so model_ref() resolves.
     mount_dir = posixpath.dirname(dep.model_path) if dep.model_path else MODELS_DIR
