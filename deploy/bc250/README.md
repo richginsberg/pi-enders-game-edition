@@ -55,7 +55,22 @@ podman logs dnc-bc250 2>&1 | grep -iE 'radeon|radv|vulkan.*device'
 # If it thrashed the node: recover, then `podman rm -f dnc-bc250`.
 ```
 
-## Verify
+## GPU access: rootless is NOT enough on this node
+Confirmed on the BC-250: **rootless podman gets only `llvmpipe` (CPU)** — RADV loads but
+`failed to initialize winsys`. `renderD128` is world-rw but `card1` is `root:video` and
+the run user isn't in `video`/`render`, so amdgpu winsys can't init under the user
+namespace. With no GPU, `-ngl 99` thrashes the 3.5 GiB host. Use ONE of:
+- **Rootful (simplest):** `sudo podman run ... --device /dev/dri ...` (root accesses card1).
+- **Rootless with groups:** `sudo usermod -aG video,render $USER` + re-login, then pass
+  `--device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups`.
+
+Always **probe first** (no model, no thrash):
+```bash
+podman run --rm --device /dev/dri --entrypoint vulkaninfo dnc/llamacpp-bc250:latest --summary \
+  | grep -iE 'deviceName|driverName'   # must show Radeon / radv, NOT llvmpipe
+```
+
+## Verify (once the probe shows a Radeon device)
 ```bash
 curl -s localhost:8080/v1/models
 curl -s localhost:8080/v1/chat/completions -H 'content-type: application/json' \
