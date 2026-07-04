@@ -31,9 +31,32 @@ it's **weights-bound**: Q4_K_S fits ~32k ctx, Q3_K_M fits ~128k+. Decide by benc
 python3 tools/model_bench.py --base http://<node>:8080/v1 --model <alias> --tag qwen36-reap --run-code
 python3 tools/model_bench.py --compare qwen3coder-current qwen36-reap
 ```
-Baseline captured: **qwen3coder-current = 80 tok/s, 6/6**. Pick the RangerX model if it holds
-≥6/6 at comparable tok/s (its newer gen should show on harder tasks — extend `TASKS` in
-`model_bench.py` with tougher prompts for a sharper quality signal).
+Baseline captured: **qwen3coder-current = 80 tok/s, 6/6**.
+
+**VERDICT (2026-07-04, final after BIOS fix): RangerX Qwen3.6-35B-REAP IS viable at S3 with the
+dynamic-VRAM BIOS split. Choose vs Qwen3-Coder on quality (Terminal-Bench), not fit.**
+
+The story in three acts:
+1. **Toy suite tied** 6/6 vs 6/6 (RangerX 66 tok/s, −18%) → can't separate them on quality; needs
+   a real bench.
+2. **Fixed 12 GB carveout OOM'd the hybrid.** On the default BIOS split (12 GB VRAM + only 3.5 GB
+   host), Qwen3.6's hybrid host-side buffers (`kv_unified='false'` per-slot KV + Gated-DeltaNet
+   **SSM recurrent state**, scaling with `slots × ctx`) blew the 3.5 GB host under 4-slot
+   concurrency → `Exited (137)` (host `global_oom`; VRAM was fine). A/B confirmed **hybrid-specific,
+   not tier-wide**: the current Qwen3-Coder-30B-REAP (plain qwen3moe, `kv_unified='true'`, no SSM)
+   held rock-stable at the identical failing config.
+3. **Dynamic 512 MB VRAM split fixed it.** Re-partitioning the BIOS to a 512 MB dynamic VRAM
+   carveout flips host RAM **3.5 GB → 14 GB**; the GPU pulls weights from **GTT (system RAM)**. The
+   hybrid now survives the exact failing workload with **5+ GB host headroom**, at **62 tok/s gen
+   (vs 65.8 carveout, ~6%), prefill higher, 6/6**. Only caveat: **cold start is slow** (first
+   request pages weights into GTT), then warms up.
+
+**Recommendations:** (a) **make the 512 MB dynamic-VRAM split the standard BC-250 config fleet-wide**
+— near-free throughput, unlocks the full 14 GB host, no more concurrency OOM. (b) S3 model is now a
+genuine **speed vs quality** call: current Qwen3-Coder (80 tok/s, faster) vs Qwen3.6-35B (62 tok/s,
+newer gen, now fits) — **resolve via Terminal-Bench**, which is finally runnable on the node since
+concurrency no longer OOMs. See [qwen36-gguf-conversion.md](qwen36-gguf-conversion.md) §6 and the
+[BC-250 README](../deploy/bc250/README.md).
 
 ---
 

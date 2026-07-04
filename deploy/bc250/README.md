@@ -40,6 +40,43 @@ docker save dnc/llamacpp-bc250:latest | ssh <user>@<bc250-host> 'podman load'
 > the symlink (a bind-mount won't follow it out of `~/models`). SELinux is Enforcing, so
 > `--security-opt label=disable` (renderD128 is world-rw) or relabel mounts with `:ro,Z`.
 
+## Host-RAM / `--parallel` budget (host RAM, not VRAM, is the ceiling)
+The VRAM fit (weights + KV ≈ 12 GB) is only half the story. llama.cpp's **per-slot** KV, compute,
+and GTT-spill buffers live in the **3.5 GB host** partition and scale with `--parallel × ctx` — so
+concurrency, not VRAM, is what OOMs this node.
+
+Observed: a model that loads and smoke-tests fine will die **`Exited (137)`** under concurrent
+long-context load (`dmesg`: `Out of memory: Killed process (llama-server)`, `global_oom`) while the
+GPU is perfectly healthy. The box stays pingable/SSH-able — only port 8080 dies (`connection
+refused`) — so it reads like a crash but it's a host-RAM OOM.
+
+Rules:
+- **`--parallel 1`** and **`-c ≤ 16384`** by default. Four slots ≈ 4× the host buffers → OOM.
+- **Never `--no-mmap`** (mallocs ~9.3 GB weights into host RAM → instant OOM). Keep mmap.
+- **`free -h` under load**; back off if `available` → 0.
+- **Agentic harnesses (Terminal-Bench) → `--n-concurrent 1`.** The 3.5 GB host caps effective
+  concurrency at ~1 regardless of model.
+- **Curl on IPv4** (`127.0.0.1`): `-p 8080:8080` publishes IPv4 only; rootless podman resets the
+  `::1` (IPv6) path — an easy false "crash".
+
+## Reasoning models: `--jinja` is REQUIRED, plus generation caps
+A **reasoning model** (e.g. Qwen3.6) served **without `--jinja`** never terminates: llama.cpp
+renders a default template that doesn't apply the model's `<|im_end|>` end-of-turn token, so the
+model finishes thinking but never stops — it runs to the context limit (measured: 50k+ tokens on a
+trivial prompt, wedging the single slot for ~20 min). `--jinja` makes it use the embedded chat
+template + reasoning parsing, and it stops cleanly (`finish_reason: stop`). Always serve with:
+```
+--jinja \
+--parallel 1 \                         # single-slot = accurate fleet scenario (24 nodes)
+-n 8192 \                              # total generation cap: outer runaway guard
+--repeat-penalty 1.1 --repeat-last-n 256 \   # break repetition loops (default penalty is OFF)
+--reasoning-budget 4096                # cap THINKING (not total) so a hard prompt still emits an
+                                       # answer instead of hitting -n mid-thought with empty content
+```
+`-n` caps total tokens; `--reasoning-budget` caps only the think channel then forces the answer —
+you need both. These are baked into the fleetd BC-250 play (`server_args`); set them by hand only
+for manual `podman run`s. Harmless no-ops for non-reasoning models (the coder has no think channel).
+
 ## The GPU gotcha: stock Mesa doesn't know this chip (THE key finding)
 Verified on the node: with stock upstream Mesa (what `dnf install mesa-vulkan-drivers`
 gives), RADV loads but reports `amdgpu: unknown (family_id, chip_external_rev): (143,132)`
