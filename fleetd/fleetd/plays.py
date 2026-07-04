@@ -33,10 +33,6 @@ IMAGES: dict[tuple[ServerKind, GpuArch], str] = {
 MODELS_DIR = "/opt/dnc/models"
 HEALTH_PATH = {ServerKind.VLLM: "/health", ServerKind.LLAMACPP: "/health"}
 
-# Host path to the BC-250-patched RADV driver, bind-mounted into the container so it
-# recognizes the chip (stock upstream Mesa does not). Override per-host if it differs.
-BC250_RADV_DRIVER = "/usr/lib64/libvulkan_radeon.so"
-
 
 def image_ref(host: Host, dep: Deployment) -> str:
     assert host.gpu_arch is not None
@@ -93,10 +89,11 @@ def docker_run_command(host: Host, dep: Deployment) -> str:
     # 3.5GiB host thrashes; with it, ~79 tok/s on the GPU. (host RADV path is
     # host-specific; RADV_DRIVER overridable.)
     if host.gpu_arch == GpuArch.RDNA2_BC250:
-        # Pass the whole /dev/dri (DRM card node numbering — card0/card1 — is NOT
-        # stable across reboots; the render node is). keep-groups carries the host
-        # render/video groups. Bind-mount the host's BC-250-patched RADV driver.
-        gpu_flag = f"--device /dev/dri --group-add keep-groups -v {BC250_RADV_DRIVER}:{BC250_RADV_DRIVER}:ro"
+        # Pass the whole /dev/dri (DRM card node numbering — card0/card1 — is NOT stable
+        # across reboots; the render node is). keep-groups carries the host render/video
+        # groups. The BC-250-patched RADV driver is baked into the image (deploy/bc250),
+        # so no host driver bind-mount is needed.
+        gpu_flag = "--device /dev/dri --group-add keep-groups"
     else:
         gpu_flag = "--gpus all"
     # Mount the shared model store, or the existing model's own dir when reusing an

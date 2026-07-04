@@ -20,3 +20,7 @@ cliproxy/cliproxy.yaml
 *.local.yaml
 *.local.ini
 *.local.json
+
+# BC-250 patched RADV driver (vendored binary; supply locally, do not commit)
+deploy/bc250/*.so
+deploy/bc250/*.rpm

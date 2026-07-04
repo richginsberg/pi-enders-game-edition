@@ -31,6 +31,13 @@ RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/
     && install -m755 /src/build/bin/llama-server /usr/local/bin/llama-server \
     && rm -rf /src
 
+# Bake in the BC-250-patched RADV driver, overwriting stock Mesa's libvulkan_radeon.so.
+# Stock upstream Mesa reports the BC-250 chip as "unknown (143,132)" -> winsys init fails
+# -> llvmpipe/CPU. The patched build (Mesa 24.1.5 rebuilt via rpmbuild, chip mapped to
+# NAVI10) fixes it. This makes the image self-contained — NO host bind-mount at run time.
+# The .so is a vendored binary (gitignored); run deploy/bc250/fetch-patched-driver.sh first.
+COPY libvulkan_radeon.so /usr/lib64/libvulkan_radeon.so
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

@@ -14,7 +14,10 @@ Containerized llama.cpp for the AMD BC-250 S3 node, using the **Vulkan/RADV** ba
   run time (via `/dev/dri/renderD128`, group `render`). ROCm's `/dev/kfd` is NOT needed.
 
 ## Build (on a box with docker/podman — e.g. the dev box)
+The image bakes in the BC-250-patched RADV driver (`libvulkan_radeon.so`), which is a
+vendored binary (gitignored). Fetch it into the build context first:
 ```bash
+./deploy/bc250/fetch-patched-driver.sh <user>@<bc250-host>   # copies the patched .so here
 docker build -t dnc/llamacpp-bc250:latest deploy/bc250
 # pin llama.cpp:  --build-arg LLAMA_CPP_REF=b9870
 ```
@@ -45,28 +48,24 @@ falls back to host RAM and **thrashes the 3.5 GiB box**. The host works because 
 **BC-250-patched Mesa** (a locally-installed `mesa-vulkan-drivers` with the same version
 string but a patched `libvulkan_radeon.so` that maps this chip to NAVI10).
 
-Fix (until the patched Mesa is baked into the image — see below): **bind-mount the host's
-patched RADV driver** over the container's stock one. Also pass both DRM nodes with the
-host groups (needs `sudo usermod -aG video,render $USER` + re-login once).
+**Fix (now baked into the image):** the Dockerfile `COPY`s the patched
+`libvulkan_radeon.so` over stock Mesa's, so the image is **self-contained — no runtime
+driver bind-mount**. You just pass the DRM device + host groups (needs
+`sudo usermod -aG video,render $USER` + re-login once so the container can open the render node).
 
 Always **probe first** (no model → no thrash if the GPU is missing):
 ```bash
 podman run --rm --security-opt label=disable \
   --device /dev/dri --group-add keep-groups \
-  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
   --entrypoint vulkaninfo dnc/llamacpp-bc250:latest --summary | grep -iE 'deviceName'
-# MUST show "AMD Radeon Graphics (RADV NAVI10)", NOT llvmpipe. Verified: ~79 tok/s.
+# MUST show "AMD Radeon Graphics (RADV NAVI10)", NOT llvmpipe. Verified end-to-end.
 ```
-
-**Proper fix (follow-up):** obtain the BC-250-patched Mesa RPM(s) and install them in the
-Dockerfile so the image is self-contained (no host bind-mount). The host has them as a
-local `mesa-vulkan-drivers-24.1.5-2.fc40` (no upstream repo).
 
 ## Start / stop / status (the validated operational commands)
 
 Pass the **whole `/dev/dri`** (DRM card node numbering — `card0`/`card1` — is not stable
-across reboots) and the host's patched RADV driver. This is the exact recipe verified on
-the node (~79 tok/s, 24 CU).
+across reboots). The patched RADV driver is baked into the image, so no driver mount is
+needed. This is the exact recipe verified on the node (~79 tok/s, 24 CU).
 
 **Create + start** (first time, or after `rm`):
 ```bash
@@ -74,7 +73,6 @@ MODEL=$(readlink -f ~/models/Qwen3-Coder-30B-A3B-Instruct-Pruned-Q4_K_M.gguf)
 podman run -d --name dnc-bc250 --restart unless-stopped \
   --security-opt label=disable \
   --device /dev/dri --group-add keep-groups \
-  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
   -p 8080:8080 \
   -v "$MODEL":/models/model.gguf:ro \
   -v ~/templates:/templates:ro \
