@@ -17,15 +17,23 @@ Constraint forces Q4 for anything ≥14B. Best coding models that fit:
 
 | Model | Quant | Weights | Context (q8 KV) | Notes |
 |---|---|---|---|---|
-| **Qwen3-Coder-30B-A3B (REAP-pruned)** *(current)* | Q4_K_M | 8.9 GB | ~65k | MoE, ~3B active → ~74 tok/s; already deployed & benchmarked |
-| **Qwen3-Coder-14B** | Q4_K_M | ~9.5 GB | ~24–32k | dense; top 12 GB coder in 2026 reviews (Python/TS); better per-token quality, less context |
-| Qwen3-Coder-7B | Q6_K | ~6 GB | ~96k+ | more context/headroom, lower ceiling |
+| **Qwen3-Coder-30B-A3B (REAP→15B)** *(current)* | Q4_K_M | 8.9 GB | ~65k | MoE ~3B active; **measured 80 tok/s, 6/6 on the coding suite**; Qwen3 gen |
+| **Qwen3.6-35B-REAP→19B** (RangerX ratio-0.5) | Q4_K_S | ~10.7 GB | ~16–32k | **candidate.** Qwen3.6 gen (newer/better coding), MoE ~3B active, hybrid attn (10/40 full-attn, 2 KV heads → tiny KV); tight at Q4 |
+| " | Q3_K_M | ~9.3 GB | ~128k+ | same model, trade quality for long context |
+| **Qwen3-Coder-14B** | Q4_K_M | ~9.5 GB | ~24–32k | dense; top 12 GB dense coder in 2026 reviews |
 
-**Recommendation:** keep the **30B-A3B (pruned)** as the default S3 — MoE gives more context
-(65k) *and* faster generation than a 14B dense, and it's proven on the node. Offer
-**Qwen3-Coder-14B Q4_K_M** as a "quality over context" alternative (best per-token coding at
-12 GB, ~32k ctx). Watch for a **small Qwen3.6 coder** (hybrid attention → tiny KV → big
-context in 12 GB) — not released yet; would be the ideal S3 upgrade if it appears.
+**The live shootout (task #20):** current vs the RangerX Qwen3.6-35B-REAP. The new model is a
+**newer generation at 19B** (likely better coding) but bigger → tighter context at Q4. KV is
+almost free on it (hybrid: only 10 of 40 layers grow KV, 2 KV heads → ~2.85 GB @ 262k), so
+it's **weights-bound**: Q4_K_S fits ~32k ctx, Q3_K_M fits ~128k+. Decide by benchmark:
+```
+# after quantizing RangerX -> GGUF and loading it in the BC-250 container:
+python3 tools/model_bench.py --base http://<node>:8080/v1 --model <alias> --tag qwen36-reap --run-code
+python3 tools/model_bench.py --compare qwen3coder-current qwen36-reap
+```
+Baseline captured: **qwen3coder-current = 80 tok/s, 6/6**. Pick the RangerX model if it holds
+≥6/6 at comparable tok/s (its newer gen should show on harder tasks — extend `TASKS` in
+`model_bench.py` with tougher prompts for a sharper quality signal).
 
 ---
 
