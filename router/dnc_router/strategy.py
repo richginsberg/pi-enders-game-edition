@@ -1,6 +1,13 @@
 """Custom LiteLLM routing strategy: tier selection + prefix-hash KV-cache affinity.
 
-Registered via `router_settings.routing_strategy: custom` (see litellm-config.yaml).
+Attached to a live Router via `Router.set_custom_routing_strategy()` from the
+programmatic launcher (`dnc_router.serve`) — the proxy YAML has no key for this.
+`set_custom_routing_strategy` rebinds the router's (async_)get_available_deployment
+to this instance's bound methods, so the router calls us with `self`=strategy and
+no deployment list; we hold a router reference and read candidates from it.
+
+Kept import-free of litellm (the setter duck-types, no isinstance check) so the pure
+routing logic stays unit-testable without the proxy installed.
 
 Two layers:
 1. Tier selection — requests to virtual models (`tier:auto`, `tier:s0`..`tier:s3`)
@@ -107,33 +114,76 @@ def select_deployment(
     return chosen
 
 
-class DncRoutingStrategy:
-    """LiteLLM CustomRoutingStrategy: async get_available_deployment.
+def _as_dict(deployment: Any) -> dict:
+    """Normalize a router deployment (dict or pydantic Deployment) to a dict."""
+    if isinstance(deployment, dict):
+        return deployment
+    if hasattr(deployment, "model_dump"):
+        return deployment.model_dump()
+    return dict(deployment)  # last resort
 
-    healthy_deployments carry `model_info.dnc_squad` metadata (set by fleetd when
-    it registers models). Selection: filter to squad → consistent-hash prefix →
-    spill to least-loaded member when the preferred deployment is saturated.
+
+def _headers(request_kwargs: dict | None) -> dict[str, str]:
+    """Pull the incoming request headers wherever the proxy stashed them."""
+    rk = request_kwargs or {}
+    psr = rk.get("proxy_server_request") or {}
+    return psr.get("headers") or rk.get("metadata", {}).get("headers") or {}
+
+
+class DncRoutingStrategy:
+    """Router-attached strategy. `set_custom_routing_strategy` rebinds the router's
+    (async_)get_available_deployment to these bound methods.
+
+    Deployments carry `model_info.dnc_squad` metadata. Selection: resolve the model
+    group's members → pick squad (tier/complexity) → consistent-hash prefix → spill
+    to least-loaded member when the preferred deployment is saturated.
+
+    NOTE: replacing the router's method bypasses its cooldown/health filtering; we
+    route over all configured members of the group (fine for the current fleet where
+    each squad has one deployment; fleetd owns health). Revisit if squads scale out.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, router: Any = None) -> None:
+        self.router = router
         self.tracker = LoadTracker()
+
+    def _members(self, model: str) -> list[dict]:
+        """All configured deployments in the requested model group (e.g. 'tier:auto')."""
+        r = self.router
+        raw: list[Any] = []
+        if r is not None:
+            get_list = getattr(r, "get_model_list", None)
+            if callable(get_list):
+                raw = get_list(model_name=model) or []
+            if not raw:
+                raw = [d for d in getattr(r, "model_list", []) if _as_dict(d).get("model_name") == model]
+        return [_as_dict(d) for d in raw]
+
+    def _choose(self, model: str, messages: list[dict[str, Any]] | None, request_kwargs: dict | None) -> dict | None:
+        messages = messages or []
+        squad = pick_tier(model, _headers(request_kwargs), messages)
+        members = self._members(model)
+        if not members:
+            return None
+        candidates = [d for d in members if d.get("model_info", {}).get("dnc_squad") == squad] or members
+        return select_deployment(candidates, messages, self.tracker)
 
     async def async_get_available_deployment(
         self,
         model: str,
-        healthy_deployments: list[dict],
         messages: list[dict[str, Any]] | None = None,
+        input: list | str | None = None,
+        specific_deployment: bool | None = False,
         request_kwargs: dict | None = None,
     ) -> dict | None:
-        messages = messages or []
-        headers = (request_kwargs or {}).get("proxy_server_request", {}).get("headers", {}) or {}
+        return self._choose(model, messages, request_kwargs)
 
-        squad = pick_tier(model, headers, messages)
-        candidates = [
-            d for d in healthy_deployments
-            if d.get("model_info", {}).get("dnc_squad") == squad
-        ] or healthy_deployments
-        if not candidates:
-            return None
-
-        return select_deployment(candidates, messages, self.tracker)
+    def get_available_deployment(
+        self,
+        model: str,
+        messages: list[dict[str, Any]] | None = None,
+        input: list | str | None = None,
+        specific_deployment: bool | None = False,
+        request_kwargs: dict | None = None,
+    ) -> dict | None:
+        return self._choose(model, messages, request_kwargs)

@@ -22,7 +22,10 @@ Type=simple
 User=__DNC_USER__
 WorkingDirectory=__DNC_HOME__
 EnvironmentFile=__DNC_HOME__/.env
-ExecStart=__DNC_HOME__/.venv/bin/litellm --config __DNC_HOME__/litellm-config.yaml --host 0.0.0.0 --port 4000
+# dnc_router.serve wraps the LiteLLM proxy and attaches the custom routing strategy
+# (tier:auto complexity+affinity). Plain `litellm --config` works too but only routes
+# the explicit tiers (tier:s0..s3) — no tier:auto.
+ExecStart=__DNC_HOME__/.venv/bin/python -m dnc_router.serve --config __DNC_HOME__/litellm-config.yaml --host 0.0.0.0 --port 4000
 Restart=on-failure
 RestartSec=5
 

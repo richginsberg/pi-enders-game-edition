@@ -88,9 +88,10 @@ Benchmarked primary (see `tools/bench_embed.py`): fast enough on CPU to not need
   (no controlling terminal) it's fine — but the unit documents the `tail -f /dev/null`
   wrapper if you ever see it exit on start.
 - **`tier:auto` + the affinity router is NOT a proxy-YAML feature** — LiteLLM registers
-  a custom strategy only via `Router.set_custom_routing_strategy()` (a programmatic
-  launcher, tracked separately). Plain `litellm --config` serves the explicit tiers
-  (`tier:s0..s3`) fine.
+  a custom strategy only via `Router.set_custom_routing_strategy()`. The launcher
+  `python -m dnc_router.serve` wraps the proxy and attaches it; the `dnc-litellm.service`
+  unit runs the launcher, so `tier:auto` works out of the box. Plain `litellm --config`
+  still serves the explicit tiers (`tier:s0..s3`) if you ever bypass the launcher.
 - **Composer 2.5 via Grok does not fit LiteLLM**: the grok-pi extension talks to
   `cli-chat-proxy.grok.com/v1` with the `openai-responses` API and `grok login` token
   auth. Use it directly in Pi, not through the gateway.

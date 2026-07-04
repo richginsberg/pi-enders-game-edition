@@ -77,7 +77,8 @@ cat > "$DNC_HOME/start-litellm.sh" <<EOF
 #!/bin/bash
 cd "$DNC_HOME"
 set -a; . "$DNC_HOME/.env"; set +a
-exec "$VENV/litellm" --config "$DNC_HOME/litellm-config.yaml" --host 0.0.0.0 --port 4000
+# dnc_router.serve = LiteLLM proxy + custom routing strategy (tier:auto affinity).
+exec "$VENV/python" -m dnc_router.serve --config "$DNC_HOME/litellm-config.yaml" --host 0.0.0.0 --port 4000
 EOF
 chmod +x "$DNC_HOME/start-litellm.sh"
 
