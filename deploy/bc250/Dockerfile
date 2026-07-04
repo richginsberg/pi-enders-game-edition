@@ -16,7 +16,8 @@ FROM fedora:40
 # Build toolchain + Vulkan build deps (glslc via libshaderc) AND the RADV runtime.
 RUN dnf -y install \
         gcc gcc-c++ cmake git \
-        vulkan-headers vulkan-loader vulkan-loader-devel libshaderc libshaderc-devel \
+        vulkan-headers vulkan-loader vulkan-loader-devel \
+        glslc spirv-headers-devel spirv-tools \
         mesa-vulkan-drivers vulkan-tools \
     && dnf clean all && rm -rf /var/cache/dnf
 
