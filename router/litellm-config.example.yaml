@@ -32,10 +32,12 @@ model_list:
     model_info:
       dnc_squad: s0
 
-  # --- S2: mid squad, Qwen3 7B-32B via vLLM (V100 / single 3090) ---
+  # --- S2: 32GB card (RTX 5090 / V100 / MI50). Recommended: Qwen3.6-27B 4-bit + q8 KV
+  # @ full 262k context (~28-29GB — fits via hybrid/linear attention). See
+  # docs/model-selection-2026.md. RTX 5090+vLLM preferred; llama.cpp GGUF q4 portable. ---
   - model_name: tier:s2
     litellm_params:
-      model: openai/qwen3-8b
+      model: openai/qwen3.6-27b
       api_base: os.environ/DNC_S2_API_BASE
       api_key: none
     model_info:
