@@ -1,7 +1,7 @@
 # divide-and-conquer self-hosted embedding server (Qwen3-Embedding-0.6B via llama.cpp CPU).
 #   run deploy/install-embeddings.sh first, then edit the paths + LD_LIBRARY_PATH below
 #   (install-embeddings.sh prints the exact LD_LIBRARY_PATH), then:
-#   sudo cp deploy/dnc-embeddings.service /etc/systemd/system/
+#   sudo cp ~/dnc/systemd/dnc-embeddings.service /etc/systemd/system/   # rendered by bootstrap.sh (templates use __DNC_*__)
 #   sudo systemctl daemon-reload && sudo systemctl enable --now dnc-embeddings
 #
 # NOTE: llama-server can exit on stdin EOF when detached from a shell. Under systemd

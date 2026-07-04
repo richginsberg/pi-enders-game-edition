@@ -37,8 +37,10 @@ cd ~/divide-and-conquer
 # 2. Fill in secrets (the script created this, chmod 600):
 $EDITOR ~/dnc/.env      # LITELLM_MASTER_KEY, GLM_API_KEY, DNC_S1_API_BASE
 
-# 3. Install + start the core services (sudo):
-sudo cp deploy/dnc-litellm.service deploy/dnc-fleetd.service /etc/systemd/system/
+# 3. Install + start the core services (sudo). The committed units are TEMPLATES with
+#    __DNC_HOME__/__DNC_USER__ placeholders (no local paths in this public repo);
+#    bootstrap.sh already rendered real ones into ~/dnc/systemd/.
+sudo cp ~/dnc/systemd/dnc-litellm.service ~/dnc/systemd/dnc-fleetd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dnc-litellm dnc-fleetd
 
@@ -59,7 +61,7 @@ sudo -u postgres createuser -s "$USER" 2>/dev/null || true
 createdb dnc_context
 psql dnc_context -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 # set DNC_PG_DSN in ~/dnc/.env (default postgresql:///dnc_context works for local peer auth), then:
-sudo cp deploy/dnc-context.service /etc/systemd/system/
+sudo cp ~/dnc/systemd/dnc-context.service /etc/systemd/system/   # rendered by bootstrap.sh
 sudo systemctl daemon-reload && sudo systemctl enable --now dnc-context
 ```
 
@@ -68,7 +70,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now dnc-context
 ```bash
 ./deploy/install-embeddings.sh        # no sudo; downloads llama.cpp + libgomp + model
 ~/dnc/embeddings/start-embeddings.sh & # smoke test, then curl localhost:8090/v1/embeddings
-# durable: edit paths in deploy/dnc-embeddings.service, then enable it (sudo).
+# durable: sudo cp ~/dnc/systemd/dnc-embeddings.service /etc/systemd/system/ (rendered), then enable it.
 ```
 Benchmarked primary (see `tools/bench_embed.py`): fast enough on CPU to not need a GPU.
 

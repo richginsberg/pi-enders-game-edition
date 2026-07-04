@@ -81,14 +81,24 @@ exec "$VENV/litellm" --config "$DNC_HOME/litellm-config.yaml" --host 0.0.0.0 --p
 EOF
 chmod +x "$DNC_HOME/start-litellm.sh"
 
+# 6. render systemd unit templates with THIS box's user/home ------------------------
+# The committed units use __DNC_HOME__/__DNC_USER__ placeholders (no local paths in
+# the public repo); render real ones here for install.
+mkdir -p "$DNC_HOME/systemd"
+for unit in "$REPO"/deploy/dnc-*.service; do
+  sed -e "s|__DNC_HOME__|$DNC_HOME|g" -e "s|__DNC_USER__|$USER|g" \
+      "$unit" > "$DNC_HOME/systemd/$(basename "$unit")"
+done
+say "rendered systemd units into $DNC_HOME/systemd/"
+
 say "DONE (no-sudo phase). Layout under $DNC_HOME:"
 ls -1 "$DNC_HOME"
 cat <<EOF
 
 Next steps (need sudo / decisions — see deploy/README.md):
   1. Fill in $DNC_HOME/.env (LITELLM_MASTER_KEY, GLM_API_KEY, DNC_S1_API_BASE).
-  2. Install services:
-       sudo cp $REPO/deploy/dnc-*.service /etc/systemd/system/
+  2. Install services (rendered with real paths — NOT the placeholder templates):
+       sudo cp $DNC_HOME/systemd/dnc-*.service /etc/systemd/system/
        sudo systemctl daemon-reload
        sudo systemctl enable --now dnc-litellm dnc-fleetd dnc-context
   3. (optional) Postgres+pgvector for the context store — see README §Postgres.

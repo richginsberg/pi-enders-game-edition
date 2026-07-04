@@ -1,5 +1,5 @@
 # divide-and-conquer fleet daemon — inventory, discovery, IaC plays, task ledger.
-#   sudo cp deploy/dnc-fleetd.service /etc/systemd/system/
+#   sudo cp ~/dnc/systemd/dnc-fleetd.service /etc/systemd/system/   # rendered by bootstrap.sh (templates use __DNC_*__)
 #   sudo systemctl daemon-reload && sudo systemctl enable --now dnc-fleetd
 # Adjust User/paths if your layout differs from the bootstrap defaults.
 

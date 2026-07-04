@@ -1,5 +1,5 @@
 # divide-and-conquer context sidecar — pgvector long-term memory (/recall, /remember, /distill).
-#   sudo cp deploy/dnc-context.service /etc/systemd/system/
+#   sudo cp ~/dnc/systemd/dnc-context.service /etc/systemd/system/   # rendered by bootstrap.sh (templates use __DNC_*__)
 #   sudo systemctl daemon-reload && sudo systemctl enable --now dnc-context
 # Requires Postgres + pgvector reachable via DNC_PG_DSN (see deploy/README.md §Postgres).
 

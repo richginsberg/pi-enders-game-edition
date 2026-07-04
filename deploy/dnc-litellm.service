@@ -3,7 +3,7 @@
 # The proxy must outlive the shell that starts it. Detached nohup/setsid proved
 # unreliable on this box (no tmux), so a system unit is the clean answer:
 #
-#   sudo cp deploy/dnc-litellm.service /etc/systemd/system/
+#   sudo cp ~/dnc/systemd/dnc-litellm.service /etc/systemd/system/   # rendered by bootstrap.sh (templates use __DNC_*__)
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now dnc-litellm
 #   systemctl status dnc-litellm ; journalctl -u dnc-litellm -f
