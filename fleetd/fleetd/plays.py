@@ -62,6 +62,25 @@ def server_args(host: Host, dep: Deployment) -> list[str]:
         ]
         if host.gpu_count > 1:
             args += ["--split-mode", "layer"]
+        if host.gpu_arch == GpuArch.RDNA2_BC250:
+            # BC-250 defaults. `--flash-attn on` is required for the q8_0 V-cache.
+            # `--jinja` is REQUIRED for reasoning models (e.g. Qwen3.6): without it
+            # llama.cpp never applies the model's end-of-turn token, so it never stops
+            # and runs to the context limit (measured: 50k+ tokens, wedges the slot).
+            # `--parallel 1` is the accurate fleet scenario (concurrency spreads across
+            # ~24 nodes, not within one). Generation caps bound any runaway loop.
+            args += [
+                "--flash-attn", "on",
+                "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+                "--jinja",
+                "--parallel", "1",
+                "-n", "8192",
+                "--repeat-penalty", "1.1", "--repeat-last-n", "256",
+                # Cap thinking (not total): forces the model to stop reasoning and emit
+                # an answer, so a hard prompt can't burn the whole turn thinking and
+                # return empty content. No-op for non-reasoning models. Tune per workload.
+                "--reasoning-budget", "4096",
+            ]
     elif dep.server == ServerKind.VLLM:
         args = [
             "--model", model_ref(dep),

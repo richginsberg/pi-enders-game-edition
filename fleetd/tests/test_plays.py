@@ -72,6 +72,21 @@ def test_bc250_uses_amd_devices_and_custom_image():
     assert "dnc/llamacpp-bc250:latest" in cmd
 
 
+def test_bc250_serving_defaults():
+    args = server_args(BC250, llamacpp_dep("bc250-01"))
+    assert args[args.index("--flash-attn") + 1] == "on"  # required for q8_0 V-cache
+    assert "--jinja" in args  # REQUIRED for reasoning models to emit their stop token
+    assert args[args.index("--parallel") + 1] == "1"  # single-slot is the accurate fleet scenario
+    assert args[args.index("-n") + 1] == "8192"  # total generation cap (runaway guard)
+    assert args[args.index("--reasoning-budget") + 1] == "4096"  # bound thinking, guarantee an answer
+    assert args[args.index("--cache-type-k") + 1] == "q8_0"
+
+
+def test_non_bc250_has_no_reasoning_or_jinja_defaults():
+    args = server_args(AMPERE_RIG, llamacpp_dep("rig-3090-a"))
+    assert "--jinja" not in args and "--reasoning-budget" not in args  # BC-250-only defaults
+
+
 def test_extra_args_appended():
     dep = llamacpp_dep("rig-3090-a")
     dep.extra_args = ["--flash-attn"]
