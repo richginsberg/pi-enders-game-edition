@@ -101,6 +101,21 @@ podman rm -f dnc-bc250       # remove (needed before re-running `podman run`)
 It's registered as `tier:s3` in the gateway (`DNC_S3_API_BASE=http://<node>:8080/v1`), so
 after `start` it's reachable via `tier:s3` once `curl localhost:8080/health` returns 200.
 
+### Surviving reboots (don't rely on `podman start`)
+Two traps: (a) rootless containers do NOT auto-start on boot, and (b) `podman start`
+reuses the **create-time** device nodes — but `/dev/dri/cardN` numbering changes across
+reboots, so `start` fails with `cannot stat /dev/dri/cardN`. Fix: a **user systemd unit
+that recreates the container each boot** (`podman run --rm --replace`, re-reading
+`/dev/dri`), plus linger so it runs without a login:
+```bash
+mkdir -p ~/.config/systemd/user
+podman generate systemd --new --name dnc-bc250 --restart-policy=on-failure \
+  > ~/.config/systemd/user/dnc-bc250.service
+systemctl --user daemon-reload && systemctl --user enable dnc-bc250.service
+loginctl enable-linger "$USER"        # start at boot without a login session (no sudo needed)
+```
+After this, a power-cycle brings `tier:s3` back automatically regardless of card renumbering.
+
 ## Verify (once the probe shows a Radeon device)
 ```bash
 curl -s localhost:8080/v1/models
