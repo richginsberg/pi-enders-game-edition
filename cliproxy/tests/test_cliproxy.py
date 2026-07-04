@@ -38,15 +38,29 @@ def test_registry_env_expand_and_routing(monkeypatch):
     assert find_module(mods, "nope") is None
 
 
-def test_grok_headers_from_auth_json(tmp_path):
+def test_grok_headers_from_oidc_auth_json(tmp_path):
+    # real grok-cli auth.json shape: keyed by <oidc_issuer>::<client_id>
     auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"grok-cli": {"type": "api_key", "key": "ey.JWT.tok"}}))
-    g = GrokModule(auth_json=str(auth), model_map={"grok-composer-2.5-fast": "composer-2.5"})
+    auth.write_text(json.dumps({"https://auth.x.ai::cid-123": {
+        "key": "ey.JWT.tok", "refresh_token": "rt", "oidc_issuer": "https://auth.x.ai",
+        "oidc_client_id": "cid-123", "expires_at": "2099-01-01T00:00:00Z",
+    }}))
+    g = GrokModule(auth_json=str(auth), refresh=False,
+                   model_map={"grok-composer-2.5-fast": "composer-2.5"},
+                   gated_headers={"x-grok-client-version": "0.0.0"})
     h = g.headers({"model": "grok-composer-2.5-fast"})
-    assert h["authorization"] == "Bearer ey.JWT.tok"     # token read fresh from auth.json
+    assert h["authorization"] == "Bearer ey.JWT.tok"      # token from the OIDC entry's `key`
     assert h["x-xai-token-auth"] == "xai-grok-cli"
-    assert h["x-grok-model-override"] == "composer-2.5"   # mapped to upstream id
-    assert g.owns("grok-build")                           # default model set
+    assert h["x-grok-model-override"] == "composer-2.5"    # mapped to upstream id
+    assert h["x-grok-client-version"] == "0.0.0"           # gated headers pass through
+    assert g.owns("grok-build")
+
+
+def test_grok_expiry_detection(tmp_path):
+    g = GrokModule(auth_json=str(tmp_path / "x"))
+    assert g._expired({"expires_at": "2000-01-01T00:00:00Z"}) is True
+    assert g._expired({"expires_at": "2099-01-01T00:00:00Z"}) is False
+    assert g._expired({}) is False  # no expiry -> treat as valid
 
 
 def test_grok_defaults():

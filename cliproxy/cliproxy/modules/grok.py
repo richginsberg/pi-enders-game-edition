@@ -1,26 +1,31 @@
-"""Grok (grok-cli proxy) module.
+"""Grok (grok-cli) module — EXPERIMENTAL, DISABLED.
 
-Bridges Composer 2.5 / grok-build — served by grok-cli's private proxy
-(cli-chat-proxy.grok.com) — into the OpenAI shape. The endpoint is gated to a legit
-grok-cli client, so we REUSE grok-cli's own helper binaries for the dynamic headers
-(client version, user agent) rather than forge them, and read the OAuth JWT from
-~/.grok/auth.json fresh per request (so token refreshes done by `grok login` / the
-grok-pi extension are picked up).
+STATUS (2026-07-04): reverse-engineering the grok-cli chat protocol was ATTEMPTED and
+BLOCKED. The `grok` binary (xai-grok-shell, Rust) is interception-resistant:
+  - base-URL env vars (GROK_CODE_BACKEND_URL etc.) do NOT redirect the chat proxy;
+  - it IGNORES HTTP(S)_PROXY and connects directly to cli-chat-proxy.grok.com;
+  - it almost certainly bundles its own CA roots, so mitmproxy can't decrypt.
+So the exact wire format (path: /v1/responses vs /chat/completions vs /rest/app-chat;
+the gated header VALUES: x-grok-client-version / x-grok-client-identifier /
+x-grok-client-surface; the request/response body) could NOT be captured remotely.
+Capturing would need root-level transparent proxying AND defeating cert pinning.
 
-STATUS: skeleton pending live-endpoint validation. UNVERIFIED until probed on the
-control-plane box where grok-cli is installed:
-  - whether the endpoint speaks /chat/completions or the OpenAI Responses API
-    (/responses) — grok-pi declares api "openai-responses". Override `_url()` /
-    add request translation once confirmed.
-  - the exact header set the proxy requires. Reusing the helper binaries is the
-    robust bet; hardcoding client-version will break when Grok bumps it.
-Not enabled in config.example.yaml until validated.
+What IS known and implemented here (so the module is correct if the protocol is ever
+captured): the real auth. `~/.grok/auth.json` is an OIDC token store keyed by
+`<oidc_issuer>::<client_id>`, value carrying `key` (short-lived access JWT, ~6h),
+`refresh_token`, `expires_at`, `oidc_issuer`, `oidc_client_id`. We read the entry fresh
+per call and refresh via OIDC when expired.
+
+RECOMMENDATION: for a stable Grok in the fleet, use an xAI API key (console.x.ai,
+`xai-…`) with LiteLLM's native `xai/` provider — NOT this CLI-proxy bridge.
+
+Not enabled in cliproxy.example.yaml.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
+import time
 from pathlib import Path
 
 from .passthrough import OpenAIPassthrough
@@ -34,11 +39,11 @@ class GrokModule(OpenAIPassthrough):
         name: str = "grok",
         base_url: str = DEFAULT_BASE,
         auth_json: str = "~/.grok/auth.json",
-        auth_field: str = "grok-cli",
+        oidc_issuer: str | None = None,   # pick the auth.json entry by issuer; None = first with a key
+        refresh: bool = True,
         model_ids: list[str] | None = None,
         model_map: dict[str, str] | None = None,
-        client_version_cmd: list[str] | None = None,  # e.g. ["<bindir>/grok-client-version"]
-        user_agent_cmd: list[str] | None = None,       # e.g. ["<bindir>/grok-user-agent"]
+        gated_headers: dict[str, str] | None = None,  # x-grok-client-version/identifier/surface (UNKNOWN — capture blocked)
         **kw,
     ) -> None:
         super().__init__(
@@ -47,36 +52,62 @@ class GrokModule(OpenAIPassthrough):
             model_map=model_map, **kw,
         )
         self.auth_json = Path(auth_json).expanduser()
-        self.auth_field = auth_field
-        self.client_version_cmd = client_version_cmd
-        self.user_agent_cmd = user_agent_cmd
+        self.oidc_issuer = oidc_issuer
+        self.refresh = refresh
+        self.gated_headers = gated_headers or {}
 
-    def _token(self) -> str:
-        # Re-read each call so grok-cli token refreshes are picked up.
+    # -- OIDC auth.json handling (this part is verified against the real file) --
+    def _entry(self) -> dict:
         data = json.loads(self.auth_json.read_text())
-        return data[self.auth_field]["key"]
+        for k, v in data.items():
+            if not isinstance(v, dict) or "key" not in v:
+                continue
+            if self.oidc_issuer is None or v.get("oidc_issuer") == self.oidc_issuer:
+                return v
+        raise RuntimeError(f"no usable OIDC entry in {self.auth_json}")
 
     @staticmethod
-    def _run(cmd: list[str] | None) -> str | None:
-        if not cmd:
-            return None
-        try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=True).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            return None
+    def _expired(entry: dict) -> bool:
+        exp = entry.get("expires_at")
+        if not exp:
+            return False
+        try:  # e.g. 2026-07-04T22:15:36.976525265Z — drop nanoseconds + Z, treat as UTC
+            from datetime import datetime, timezone
+            s = exp.split(".")[0].rstrip("Z")
+            t = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+            return t.timestamp() <= time.time() + 60
+        except ValueError:
+            return False
 
+    def _refresh_token(self, entry: dict) -> str:
+        """Standard OIDC refresh: discover token_endpoint, exchange refresh_token."""
+        import httpx
+
+        issuer = entry["oidc_issuer"].rstrip("/")
+        with httpx.Client(timeout=30) as c:
+            conf = c.get(f"{issuer}/.well-known/openid-configuration").json()
+            r = c.post(conf["token_endpoint"], data={
+                "grant_type": "refresh_token",
+                "refresh_token": entry["refresh_token"],
+                "client_id": entry["oidc_client_id"],
+            })
+            r.raise_for_status()
+            return r.json()["access_token"]
+
+    def _token(self) -> str:
+        entry = self._entry()
+        if self.refresh and self._expired(entry):
+            return self._refresh_token(entry)
+        return entry["key"]
+
+    # -- headers: auth is correct; the gated client signature is UNKNOWN --------
     def headers(self, body: dict | None = None) -> dict[str, str]:
         h = {
             "content-type": "application/json",
             "authorization": f"Bearer {self._token()}",
             "x-xai-token-auth": "xai-grok-cli",
+            **self.gated_headers,  # x-grok-client-version/identifier/surface — MUST be supplied; capture was blocked
         }
-        cv = self._run(self.client_version_cmd)
-        ua = self._run(self.user_agent_cmd)
-        if cv:
-            h["x-grok-client-version"] = cv
-        if ua:
-            h["user-agent"] = ua
         if body and body.get("model"):
             h["x-grok-model-override"] = self.model_map.get(body["model"], body["model"])
         return h
