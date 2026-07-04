@@ -49,32 +49,57 @@ Fix (until the patched Mesa is baked into the image — see below): **bind-mount
 patched RADV driver** over the container's stock one. Also pass both DRM nodes with the
 host groups (needs `sudo usermod -aG video,render $USER` + re-login once).
 
-```bash
-MODEL=$(readlink -f ~/models/Qwen3-Coder-30B-A3B-Instruct-Pruned-Q4_K_M.gguf)
-podman run -d --name dnc-bc250 \
-  --security-opt label=disable \
-  --device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups \
-  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
-  -p 8080:8080 \
-  -v "$MODEL":/models/model.gguf:ro \
-  -v ~/templates:/templates:ro \
-  -e DNC_MODEL=/models/model.gguf \
-  -e DNC_CHAT_TEMPLATE=/templates/Qwen-Qwen3-Coder-30B-A3B-Instruct-tool_use.jinja \
-  -e DNC_CTX=65536 \
-  dnc/llamacpp-bc250:latest
-```
-
 Always **probe first** (no model → no thrash if the GPU is missing):
 ```bash
 podman run --rm --security-opt label=disable \
-  --device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups \
+  --device /dev/dri --group-add keep-groups \
   -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
   --entrypoint vulkaninfo dnc/llamacpp-bc250:latest --summary | grep -iE 'deviceName'
 # MUST show "AMD Radeon Graphics (RADV NAVI10)", NOT llvmpipe. Verified: ~79 tok/s.
 ```
+
 **Proper fix (follow-up):** obtain the BC-250-patched Mesa RPM(s) and install them in the
 Dockerfile so the image is self-contained (no host bind-mount). The host has them as a
 local `mesa-vulkan-drivers-24.1.5-2.fc40` (no upstream repo).
+
+## Start / stop / status (the validated operational commands)
+
+Pass the **whole `/dev/dri`** (DRM card node numbering — `card0`/`card1` — is not stable
+across reboots) and the host's patched RADV driver. This is the exact recipe verified on
+the node (~79 tok/s, 24 CU).
+
+**Create + start** (first time, or after `rm`):
+```bash
+MODEL=$(readlink -f ~/models/Qwen3-Coder-30B-A3B-Instruct-Pruned-Q4_K_M.gguf)
+podman run -d --name dnc-bc250 --restart unless-stopped \
+  --security-opt label=disable \
+  --device /dev/dri --group-add keep-groups \
+  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
+  -p 8080:8080 \
+  -v "$MODEL":/models/model.gguf:ro \
+  -v ~/templates:/templates:ro \
+  --entrypoint llama-server dnc/llamacpp-bc250:latest \
+    -m /models/model.gguf -ngl 99 -c 65536 \
+    --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --temp 0.6 \
+    --host 0.0.0.0 --port 8080 --alias Qwen-Qwen3-Coder-30B-A3B-Instruct \
+    --jinja --chat-template-file /templates/Qwen-Qwen3-Coder-30B-A3B-Instruct-tool_use.jinja
+```
+> `--entrypoint llama-server` with explicit flags is used because the currently-deployed
+> image predates the `--flash-attn on` entrypoint fix; an image rebuilt from current
+> `deploy/bc250/` runs the env-driven entrypoint directly (just drop the `--entrypoint …`
+> override and the trailing flags).
+
+**Everyday start/stop** (once the container exists):
+```bash
+podman stop dnc-bc250        # stop  (also frees the GPU)
+podman start dnc-bc250       # start
+podman restart dnc-bc250     # restart
+podman ps --filter name=dnc-bc250 --format '{{.Status}}'   # status
+podman logs -f dnc-bc250     # follow logs (Ctrl-C to detach)
+podman rm -f dnc-bc250       # remove (needed before re-running `podman run`)
+```
+It's registered as `tier:s3` in the gateway (`DNC_S3_API_BASE=http://<node>:8080/v1`), so
+after `start` it's reachable via `tier:s3` once `curl localhost:8080/health` returns 200.
 
 ## Verify (once the probe shows a Radeon device)
 ```bash
