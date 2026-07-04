@@ -1,0 +1,27 @@
+# divide-and-conquer self-hosted embedding server (Qwen3-Embedding-0.6B via llama.cpp CPU).
+#   run deploy/install-embeddings.sh first, then edit the paths + LD_LIBRARY_PATH below
+#   (install-embeddings.sh prints the exact LD_LIBRARY_PATH), then:
+#   sudo cp deploy/dnc-embeddings.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dnc-embeddings
+#
+# NOTE: llama-server can exit on stdin EOF when detached from a shell. Under systemd
+# there is no controlling terminal (systemd is the supervisor, no SIGHUP on logout),
+# so plain ExecStart is expected to stay up. If it exits immediately anyway, wrap the
+# command to hold stdin open:
+#   ExecStart=/bin/bash -c 'tail -f /dev/null | __DNC_HOME__/embeddings/start-embeddings.sh'
+
+[Unit]
+Description=divide-and-conquer embedding server (Qwen3-Embedding, llama.cpp CPU)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__DNC_USER__
+# start-embeddings.sh sets LD_LIBRARY_PATH (libgomp + llama libs) and the -t 4 flags.
+ExecStart=__DNC_HOME__/embeddings/start-embeddings.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

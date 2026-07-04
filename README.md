@@ -16,6 +16,7 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 | [`context/`](context/) | Python | Long-term context: repo-partitioned pgvector store + `embed:qwen3` client; `remember()`/`recall()` for the RAG layer |
 | [`agents/`](agents/) | Markdown | Engineering personas (Product Manager, Principal Engineer) added on top of `@chankov/agent-skills`, bound to fleet tiers |
 | [`tools/`](tools/) | Python | Operational scripts (e.g. `bench_embed.py` — embedding-endpoint latency benchmark) |
+| [`deploy/`](deploy/) | Bash/systemd | Control-plane IaC: `bootstrap.sh`, systemd units, embedding installer, and the [standup runbook](deploy/README.md) |
 | `pi/` | — | Upstream Pi clone, reference only (not part of this repo) |
 
 ## Quick start (M1)

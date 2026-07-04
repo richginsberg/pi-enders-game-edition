@@ -80,12 +80,12 @@ model_list:
     litellm_params: { model: openai/qwen3-4b, api_base: os.environ/DNC_S3_API_BASE, api_key: none }
     model_info: { dnc_squad: s3 }
 
-router_settings:
-  routing_strategy: "custom"
-  routing_strategy_args: {}
-
-litellm_settings:
-  custom_router: dnc_router.strategy.DncRoutingStrategy
+# NOTE: LiteLLM's proxy YAML has NO key to register a custom routing strategy — it is
+# a Router (SDK) feature registered via Router.set_custom_routing_strategy(). So
+# `tier:auto` (the DncRoutingStrategy: complexity tiers + prefix-hash affinity) needs a
+# programmatic launcher, NOT `litellm --config` alone (verified against LiteLLM on the
+# control-plane box, 2026-07-03). Plain `litellm --config` still serves the explicit
+# tiers (tier:s0..s3) with default routing — just without affinity on tier:auto.
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

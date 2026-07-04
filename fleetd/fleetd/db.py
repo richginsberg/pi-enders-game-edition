@@ -22,7 +22,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 class Db:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # FastAPI runs sync endpoints in a threadpool, so the connection is used from
+        # threads other than the one that created it; sqlite's default guard forbids
+        # that. Our access is low-volume and serialized, so allow cross-thread use.
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.executescript(SCHEMA)
 
     # -- hosts ---------------------------------------------------------------

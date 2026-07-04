@@ -1,0 +1,30 @@
+# divide-and-conquer LiteLLM gateway — durable systemd unit for the control-plane box.
+#
+# The proxy must outlive the shell that starts it. Detached nohup/setsid proved
+# unreliable on this box (no tmux), so a system unit is the clean answer:
+#
+#   sudo cp deploy/dnc-litellm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dnc-litellm
+#   systemctl status dnc-litellm ; journalctl -u dnc-litellm -f
+#
+# Assumes the layout created during standup: uv venv + config + gitignored .env
+# under ~/dnc. Adjust User/paths if different. Secrets stay in the EnvironmentFile
+# (~/dnc/.env, chmod 600) — never in this committed unit.
+
+[Unit]
+Description=divide-and-conquer LiteLLM gateway (tiered fleet routing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__DNC_USER__
+WorkingDirectory=__DNC_HOME__
+EnvironmentFile=__DNC_HOME__/.env
+ExecStart=__DNC_HOME__/.venv/bin/litellm --config __DNC_HOME__/litellm-config.yaml --host 0.0.0.0 --port 4000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

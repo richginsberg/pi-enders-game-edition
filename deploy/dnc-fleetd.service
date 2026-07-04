@@ -1,0 +1,21 @@
+# divide-and-conquer fleet daemon — inventory, discovery, IaC plays, task ledger.
+#   sudo cp deploy/dnc-fleetd.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dnc-fleetd
+# Adjust User/paths if your layout differs from the bootstrap defaults.
+
+[Unit]
+Description=divide-and-conquer fleet daemon (fleetd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__DNC_USER__
+WorkingDirectory=__DNC_HOME__
+EnvironmentFile=__DNC_HOME__/.env
+ExecStart=__DNC_HOME__/.venv/bin/fleetd serve --host 0.0.0.0 --port 7431
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
