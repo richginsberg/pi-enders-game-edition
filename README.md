@@ -11,6 +11,7 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 |---|---|---|
 | [`fleetd/`](fleetd/) | Python | Sidecar daemon: host inventory, SSH/Docker IaC plays, health polling, task ledger, LiteLLM registration |
 | [`router/`](router/) | Python | LiteLLM proxy config + custom routing strategy (tier selection, prefix-hash cache affinity) |
+| [`cliproxy/`](cliproxy/) | Python | Pluggable OpenAI-compatible auth-bridge: presents `/v1` outward, adapts CLI/provider auth (e.g. Grok) inward |
 | [`pi-ext/`](pi-ext/) | TypeScript | Pi extension: fleet provider (models from LiteLLM), `/fleet`, `/deploy`, `/tasks` commands |
 | [`harness/`](harness/) | TypeScript | Relentless (Ralph-loop) runner: DoD ledger, judge/enlistment, subagent fan-out |
 | [`context/`](context/) | Python | Long-term context: repo-partitioned pgvector store + `embed:qwen3` client; `remember()`/`recall()` for the RAG layer |

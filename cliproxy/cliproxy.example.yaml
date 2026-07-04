@@ -1,0 +1,29 @@
+# dnc-cliproxy config TEMPLATE.
+#   cp cliproxy.example.yaml cliproxy.yaml   # gitignored; edit locally
+# ${VAR} expands from the environment. No secrets committed.
+
+modules:
+  # --- reference: any OpenAI-compatible upstream (validates the framework) ---
+  - type: passthrough
+    name: example-openai
+    base_url: ${DNC_EXAMPLE_BASE}        # e.g. http://127.0.0.1:4000/v1 (the fleet gateway)
+    api_key: ${DNC_EXAMPLE_KEY}          # or "none"
+    model_ids: [example-model]
+    # model_map: { example-model: tier:s3 }   # expose id -> upstream id
+
+  # --- Grok (Composer 2.5 via grok-cli proxy) — ENABLE AFTER LIVE PROBING ---
+  # Requires grok-cli installed on THIS host (for the helper binaries) + a valid
+  # ~/.grok/auth.json. Unverified until probed: endpoint path (chat/completions vs
+  # Responses API) and required headers. See modules/grok.py.
+  # - type: grok
+  #   name: grok
+  #   auth_json: ~/.grok/auth.json
+  #   client_version_cmd: ["/path/to/grok-cli/bin/grok-client-version"]
+  #   user_agent_cmd: ["/path/to/grok-cli/bin/grok-user-agent"]
+  #   model_ids: [grok-composer-2.5-fast, grok-build]
+
+# Then in LiteLLM, add a plain openai/ model pointing here, e.g.:
+#   - model_name: tier:s0
+#     litellm_params: { model: openai/grok-composer-2.5-fast,
+#                       api_base: http://127.0.0.1:7433/v1, api_key: none }
+#     model_info: { dnc_squad: s0 }
