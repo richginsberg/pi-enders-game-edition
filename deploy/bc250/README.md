@@ -37,11 +37,24 @@ docker save dnc/llamacpp-bc250:latest | ssh <user>@<bc250-host> 'podman load'
 > the symlink (a bind-mount won't follow it out of `~/models`). SELinux is Enforcing, so
 > `--security-opt label=disable` (renderD128 is world-rw) or relabel mounts with `:ro,Z`.
 
+## The GPU gotcha: stock Mesa doesn't know this chip (THE key finding)
+Verified on the node: with stock upstream Mesa (what `dnf install mesa-vulkan-drivers`
+gives), RADV loads but reports `amdgpu: unknown (family_id, chip_external_rev): (143,132)`
+and `failed to initialize winsys` → Vulkan shows only **`llvmpipe` (CPU)**, so `-ngl 99`
+falls back to host RAM and **thrashes the 3.5 GiB box**. The host works because it has a
+**BC-250-patched Mesa** (a locally-installed `mesa-vulkan-drivers` with the same version
+string but a patched `libvulkan_radeon.so` that maps this chip to NAVI10).
+
+Fix (until the patched Mesa is baked into the image — see below): **bind-mount the host's
+patched RADV driver** over the container's stock one. Also pass both DRM nodes with the
+host groups (needs `sudo usermod -aG video,render $USER` + re-login once).
+
 ```bash
 MODEL=$(readlink -f ~/models/Qwen3-Coder-30B-A3B-Instruct-Pruned-Q4_K_M.gguf)
 podman run -d --name dnc-bc250 \
   --security-opt label=disable \
-  --device /dev/dri/renderD128 \
+  --device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups \
+  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
   -p 8080:8080 \
   -v "$MODEL":/models/model.gguf:ro \
   -v ~/templates:/templates:ro \
@@ -49,26 +62,19 @@ podman run -d --name dnc-bc250 \
   -e DNC_CHAT_TEMPLATE=/templates/Qwen-Qwen3-Coder-30B-A3B-Instruct-tool_use.jinja \
   -e DNC_CTX=65536 \
   dnc/llamacpp-bc250:latest
-
-# Confirm the GPU was found, THEN recreate with --restart unless-stopped:
-podman logs dnc-bc250 2>&1 | grep -iE 'radeon|radv|vulkan.*device'
-# If it thrashed the node: recover, then `podman rm -f dnc-bc250`.
 ```
 
-## GPU access: rootless is NOT enough on this node
-Confirmed on the BC-250: **rootless podman gets only `llvmpipe` (CPU)** — RADV loads but
-`failed to initialize winsys`. `renderD128` is world-rw but `card1` is `root:video` and
-the run user isn't in `video`/`render`, so amdgpu winsys can't init under the user
-namespace. With no GPU, `-ngl 99` thrashes the 3.5 GiB host. Use ONE of:
-- **Rootful (simplest):** `sudo podman run ... --device /dev/dri ...` (root accesses card1).
-- **Rootless with groups:** `sudo usermod -aG video,render $USER` + re-login, then pass
-  `--device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups`.
-
-Always **probe first** (no model, no thrash):
+Always **probe first** (no model → no thrash if the GPU is missing):
 ```bash
-podman run --rm --device /dev/dri --entrypoint vulkaninfo dnc/llamacpp-bc250:latest --summary \
-  | grep -iE 'deviceName|driverName'   # must show Radeon / radv, NOT llvmpipe
+podman run --rm --security-opt label=disable \
+  --device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups \
+  -v /usr/lib64/libvulkan_radeon.so:/usr/lib64/libvulkan_radeon.so:ro \
+  --entrypoint vulkaninfo dnc/llamacpp-bc250:latest --summary | grep -iE 'deviceName'
+# MUST show "AMD Radeon Graphics (RADV NAVI10)", NOT llvmpipe. Verified: ~79 tok/s.
 ```
+**Proper fix (follow-up):** obtain the BC-250-patched Mesa RPM(s) and install them in the
+Dockerfile so the image is self-contained (no host bind-mount). The host has them as a
+local `mesa-vulkan-drivers-24.1.5-2.fc40` (no upstream repo).
 
 ## Verify (once the probe shows a Radeon device)
 ```bash

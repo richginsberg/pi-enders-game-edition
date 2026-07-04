@@ -33,6 +33,10 @@ IMAGES: dict[tuple[ServerKind, GpuArch], str] = {
 MODELS_DIR = "/opt/dnc/models"
 HEALTH_PATH = {ServerKind.VLLM: "/health", ServerKind.LLAMACPP: "/health"}
 
+# Host path to the BC-250-patched RADV driver, bind-mounted into the container so it
+# recognizes the chip (stock upstream Mesa does not). Override per-host if it differs.
+BC250_RADV_DRIVER = "/usr/lib64/libvulkan_radeon.so"
+
 
 def image_ref(host: Host, dep: Deployment) -> str:
     assert host.gpu_arch is not None
@@ -81,13 +85,20 @@ def server_args(host: Host, dep: Deployment) -> list[str]:
 def docker_run_command(host: Host, dep: Deployment) -> str:
     """Render the idempotent (re)create command for a managed deployment."""
     name = container_name(dep)
-    # BC-250 uses the Vulkan/RADV backend: it needs the DRM render node and the `render`
-    # group, NOT ROCm's /dev/kfd. Everything else uses the NVIDIA runtime.
-    gpu_flag = (
-        "--device /dev/dri --group-add render"
-        if host.gpu_arch == GpuArch.RDNA2_BC250
-        else "--gpus all"
-    )
+    # BC-250 uses the Vulkan/RADV backend (NOT ROCm /dev/kfd). It needs BOTH DRM nodes
+    # (renderD128 + card1) with the host's supplementary groups, AND the host's
+    # BC-250-PATCHED RADV driver bind-mounted over the container's stock one — stock
+    # upstream Mesa reports the chip as "unknown (143,132)" and winsys init fails.
+    # Verified on the node: without the patched driver you get llvmpipe (CPU) and the
+    # 3.5GiB host thrashes; with it, ~79 tok/s on the GPU. (host RADV path is
+    # host-specific; RADV_DRIVER overridable.)
+    if host.gpu_arch == GpuArch.RDNA2_BC250:
+        gpu_flag = (
+            f"--device /dev/dri/renderD128 --device /dev/dri/card1 --group-add keep-groups "
+            f"-v {BC250_RADV_DRIVER}:{BC250_RADV_DRIVER}:ro"
+        )
+    else:
+        gpu_flag = "--gpus all"
     # Mount the shared model store, or the existing model's own dir when reusing an
     # on-disk model (migration). Same path inside and out so model_ref() resolves.
     mount_dir = posixpath.dirname(dep.model_path) if dep.model_path else MODELS_DIR
