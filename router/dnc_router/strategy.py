@@ -40,6 +40,13 @@ CTX_ESCALATION_TOKENS = {"s3": 6_000, "s2": 24_000, "s1": 80_000}
 LOAD_WINDOW_S = 30.0
 SPILL_THRESHOLD = 4
 
+# Per-squad soft concurrency: spill to another member once the affinity-preferred
+# deployment has this many selections in LOAD_WINDOW_S. S3 nodes (BC-250) serve
+# single-slot (`--parallel 1`), so a second concurrent request just queues behind a
+# multi-minute prefill — treat one recent request as "busy" and spread instead of
+# dogpiling. Squads not listed use SPILL_THRESHOLD.
+SQUAD_CONCURRENCY = {"s3": 1}
+
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     chars = sum(len(str(m.get("content", ""))) for m in messages)
@@ -100,14 +107,24 @@ def select_deployment(
     messages: list[dict[str, Any]],
     tracker: LoadTracker,
     now: float | None = None,
+    unhealthy_ids: frozenset[str] | set[str] = frozenset(),
+    spill_threshold: int = SPILL_THRESHOLD,
 ) -> dict:
-    """Prefix-hash affinity with load-based spill-over. `candidates` is non-empty."""
-    ordered = sorted(candidates, key=deployment_id)
+    """Prefix-hash affinity with load-based spill-over, skipping unhealthy hosts.
+
+    `candidates` is non-empty. Deployments in `unhealthy_ids` (cooling down / failing a
+    health check) are removed *before* the affinity hash, so a downed host deterministically
+    rehashes its traffic to a live sibling instead of black-holing it. If every candidate is
+    unhealthy we fall back to the full set (better to try a maybe-stale host than 500 — the
+    request-level retry/fallback is the backstop).
+    """
+    healthy = [c for c in candidates if deployment_id(c) not in unhealthy_ids] or candidates
+    ordered = sorted(healthy, key=deployment_id)
     h = int(prefix_hash(messages), 16)
     preferred = ordered[h % len(ordered)]
 
     chosen = preferred
-    if len(ordered) > 1 and tracker.load(deployment_id(preferred), now) >= SPILL_THRESHOLD:
+    if len(ordered) > 1 and tracker.load(deployment_id(preferred), now) >= spill_threshold:
         chosen = min(ordered, key=lambda d: tracker.load(deployment_id(d), now))
 
     tracker.record(deployment_id(chosen), now)
@@ -138,14 +155,36 @@ class DncRoutingStrategy:
     group's members → pick squad (tier/complexity) → consistent-hash prefix → spill
     to least-loaded member when the preferred deployment is saturated.
 
-    NOTE: replacing the router's method bypasses its cooldown/health filtering; we
-    route over all configured members of the group (fine for the current fleet where
-    each squad has one deployment; fleetd owns health). Revisit if squads scale out.
+    Replacing the router's method bypasses its built-in cooldown/health filter, so we
+    re-apply it: `_unhealthy()` reads the router's cooldown state and `select_deployment`
+    excludes those hosts. This is the "route around a downed node" behavior — a host that
+    fails / is cooling down drops out of affinity and spill until it recovers. The
+    request-level retry+fallback (litellm-config) is the backstop when our snapshot is stale.
     """
 
     def __init__(self, router: Any = None) -> None:
         self.router = router
         self.tracker = LoadTracker()
+
+    def _unhealthy(self) -> set[str]:
+        """Best-effort set of deployment ids the router considers unusable (cooling down
+        after failures). Tolerant of litellm version differences — any problem degrades to
+        an empty set (no pre-filtering), never breaks routing. The pure filtering logic is
+        tested via select_deployment; this is thin, defensive glue over litellm internals."""
+        r = self.router
+        if r is None:
+            return set()
+        try:
+            getter = getattr(r, "_get_cooldown_deployments", None)
+            res = getter() if callable(getter) else None
+            if isinstance(res, (list, set, tuple)):
+                return {str(x) for x in res}
+            # some versions return (cooldown_list, cooldown_times)
+            if isinstance(res, tuple) and res and isinstance(res[0], (list, set)):
+                return {str(x) for x in res[0]}
+        except Exception:
+            pass
+        return set()
 
     def _members(self, model: str) -> list[dict]:
         """All configured deployments in the requested model group (e.g. 'tier:auto')."""
@@ -166,7 +205,13 @@ class DncRoutingStrategy:
         if not members:
             return None
         candidates = [d for d in members if d.get("model_info", {}).get("dnc_squad") == squad] or members
-        return select_deployment(candidates, messages, self.tracker)
+        return select_deployment(
+            candidates,
+            messages,
+            self.tracker,
+            unhealthy_ids=self._unhealthy(),
+            spill_threshold=SQUAD_CONCURRENCY.get(squad, SPILL_THRESHOLD),
+        )
 
     async def async_get_available_deployment(
         self,

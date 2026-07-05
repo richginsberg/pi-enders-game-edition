@@ -43,14 +43,29 @@ model_list:
     model_info:
       dnc_squad: s2
 
-  # --- S3: wide/cheap squad, Qwen3 4B q4 via llama.cpp (Pascal / BC-250) ---
+  # --- S3: wide/cheap squad via llama.cpp (BC-250 fleet). ---
+  # FAILOVER NEEDS >=2 NODES: the gateway can only route around a downed/at-capacity
+  # S3 host if there is another S3 deployment to fall to. Register EVERY BC-250 node
+  # as its own tier:s3 entry (distinct model_info.id + api_base). With one node, a
+  # failure falls back to tier:s2 (see router_settings.fallbacks), not sideways.
+  # BC-250 is single-slot (--parallel 1): the custom strategy treats one in-flight
+  # request as "busy" (SQUAD_CONCURRENCY[s3]=1) and spreads instead of dogpiling.
   - model_name: tier:s3
     litellm_params:
-      model: openai/qwen3-4b
+      model: openai/qwen3.6-35b-reap
       api_base: os.environ/DNC_S3_API_BASE
       api_key: none
     model_info:
+      id: s3-node-01
       dnc_squad: s3
+  # - model_name: tier:s3        # add one block PER BC-250 node for real failover
+  #   litellm_params:
+  #     model: openai/qwen3.6-35b-reap
+  #     api_base: os.environ/DNC_S3_API_BASE_02
+  #     api_key: none
+  #   model_info:
+  #     id: s3-node-02
+  #     dnc_squad: s3
 
   # --- embeddings: Qwen3-Embedding-0.6B Q8_0 ---
   # PRIMARY: self-hosted on the control-plane 9700T CPU (llama.cpp --embeddings).
@@ -90,5 +105,29 @@ model_list:
 # not tier:auto. (Verified live on the control-plane box: tier:auto routed
 # complexity=max -> S0 and complexity=high -> S1.)
 
+# --- Gateway-level auto-heal (LB-style health checks + failover) ---
+# Distinguish a DOWN host from a SLOW one by keeping the liveness signal SEPARATE
+# from the work request:
+#   * DOWN  -> TCP refused / health probe fails -> detected in ms, cools the node down.
+#   * SLOW  -> request in flight for minutes, but /health still returns 200 the whole
+#             time (including through a multi-minute cold prefill, which emits NO tokens).
+# So `timeout` must be generous enough for worst-case prefill+gen (never use it as the
+# health signal), while cooldown/retry react to connection-level failures and the
+# background health check reacts to a truly unreachable host.
+router_settings:
+  num_retries: 2                 # on failure, retry -> strategy re-picks (skips the cooled-down host)
+  timeout: 900                   # per-request ceiling; sized for worst-case BC-250 prefill+gen, NOT liveness
+  allowed_fails: 2               # failures within the window before a deployment is cooled down
+  cooldown_time: 60              # seconds a failing deployment is pulled from rotation
+  # If a whole tier is unreachable, fall UP a tier rather than error (S3->S2->S1).
+  fallbacks:
+    - {"tier:s3": ["tier:s2"]}
+    - {"tier:s2": ["tier:s1"]}
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  # Background liveness probe: pings each deployment's /health on an interval and drops
+  # unreachable ones from rotation. This is the keepalive that tells "down" from "slow"
+  # — it keeps answering while a node is mid-generation, and fails fast when it's gone.
+  background_health_checks: true
+  health_check_interval: 30

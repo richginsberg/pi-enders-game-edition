@@ -85,6 +85,67 @@ def test_single_candidate_never_spills():
         assert chosen["model_info"]["id"] == "only"
 
 
+# --- health / cooldown filtering -------------------------------------------------
+
+def test_unhealthy_host_excluded_from_affinity():
+    candidates = [dep("a", "s3"), dep("b", "s3")]
+    m = msgs("prefix that hashes to a")
+    # find whichever host affinity prefers, then mark it unhealthy
+    preferred = select_deployment(candidates, m, LoadTracker())["model_info"]["id"]
+    other = "b" if preferred == "a" else "a"
+    chosen = select_deployment(candidates, m, LoadTracker(), unhealthy_ids={preferred})
+    assert chosen["model_info"]["id"] == other  # rehashed to the live sibling
+
+
+def test_all_unhealthy_falls_back_to_full_set():
+    candidates = [dep("a", "s3"), dep("b", "s3")]
+    chosen = select_deployment(candidates, msgs("p"), LoadTracker(), unhealthy_ids={"a", "b"})
+    assert chosen["model_info"]["id"] in {"a", "b"}  # last resort: don't black-hole
+
+
+def test_unhealthy_excluded_from_spill_target():
+    # preferred saturates and would spill, but the only other host is unhealthy -> stays put
+    candidates = [dep("a", "s3"), dep("b", "s3")]
+    tracker = LoadTracker()
+    m = msgs("hot")
+    pref = select_deployment(candidates, m, LoadTracker())["model_info"]["id"]
+    other = "b" if pref == "a" else "a"
+    seen = {
+        select_deployment(candidates, m, tracker, now=1.0, unhealthy_ids={other})["model_info"]["id"]
+        for _ in range(SPILL_THRESHOLD + 3)
+    }
+    assert seen == {pref}  # never spilled to the unhealthy host
+
+
+def test_s3_spills_after_one_request_single_slot():
+    # SQUAD_CONCURRENCY['s3']=1 -> a second request within the window spreads off the busy node
+    deployments = [dep("s3-a", "s3"), dep("s3-b", "s3")]
+    strat = DncRoutingStrategy(router=FakeRouter(deployments))
+    seen = [_run(strat, "tier:auto", {"x-dnc-complexity": "low"}, text="same")["model_info"]["id"] for _ in range(2)]
+    assert set(seen) == {"s3-a", "s3-b"}  # didn't dogpile one single-slot node
+
+
+def test_strategy_skips_cooling_down_deployment():
+    deployments = [dep("s3-a", "s3"), dep("s3-b", "s3")]
+    router = FakeRouter(deployments)
+    m = msgs("pick")
+    pref = select_deployment(deployments, m, LoadTracker())["model_info"]["id"]
+    router._get_cooldown_deployments = lambda: [pref]  # litellm cooled it down after failures
+    strat = DncRoutingStrategy(router=router)
+    chosen = _run(strat, "tier:auto", {"x-dnc-complexity": "low"}, text="pick")
+    assert chosen["model_info"]["id"] != pref  # routed to the healthy sibling
+
+
+def test_unhealthy_getter_errors_degrade_gracefully():
+    router = FakeRouter([dep("s3-a", "s3")])
+    def boom():
+        raise RuntimeError("litellm internals changed")
+    router._get_cooldown_deployments = boom
+    strat = DncRoutingStrategy(router=router)
+    # must not raise; falls back to no filtering
+    assert _run(strat, "tier:auto", {"x-dnc-complexity": "low"})["model_info"]["id"] == "s3-a"
+
+
 # --- strategy end-to-end ------------------------------------------------------------
 
 class FakeRouter:
