@@ -5,6 +5,18 @@ heterogeneous GPU inference hosts (Pascal → Volta → Ampere → frontier APIs
 complexity-tiered, KV-cache-affinity routing, relentless task completion, and
 TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 
+## Status
+
+| Milestone | State |
+|---|---|
+| **M1 — Tiered routing** | ✅ measured (`tools/m1_benchmark.py`): `tier:auto` routes by complexity; repeated-prefix cache-hit 0%→99% cold-to-warm. Cross-host affinity A/B deferred until a squad has ≥2 nodes. |
+| **M2 — Ralph loops + DoD + judge** | ✅ implemented — [`harness/`](harness/) (`ralph`, `dod`, `fanout`) + `/tasks` checklist with tmux peek. |
+| **M3 — Fleet IaC + deploy wizard** | ✅ — fleetd plays (deploy/upgrade/**adopt**/**migrate**), SSH discovery, `/deploy` wizard, BC-250 Vulkan container. |
+| **M4 — Observability + governance** | ◻ pending (no Prometheus/Grafana yet). Foothold in place: LiteLLM DB-backed UI + spend/logs, and gateway health-check/cooldown/failover. |
+| **M5 — Personas + long-term context** | ✅ — @chankov personas + PM/Principal; pgvector store, `embed:qwen3`, vague-prompt recall/inject, salience-judge writes. |
+
+**Next:** bring **S2 (32 GB card)** and additional **BC-250 (S3)** nodes online and register them — unblocks the M1 cross-host affinity A/B and real gateway failover (which both need ≥2 nodes per squad).
+
 ## Layout
 
 | Directory | Language | Purpose |
@@ -26,7 +38,11 @@ TUI-driven fleet governance. See [PLAN.md](PLAN.md) for the full design.
 # 1. Control-plane box: LiteLLM with the custom router
 cd router && pip install -e .
 cp litellm-config.example.yaml litellm-config.yaml  # local copy, gitignored — add your endpoints/keys
-litellm --config litellm-config.yaml
+
+# Serve it. IMPORTANT: `tier:auto` (complexity tiers + prefix-hash affinity) is a custom
+# routing strategy the proxy YAML can't register — use the launcher, not plain `litellm`:
+python -m dnc_router.serve --config litellm-config.yaml --host 0.0.0.0 --port 4000
+#   (plain `litellm --config …` also works but only routes the explicit tiers tier:s0..s3)
 
 # 2. fleetd
 cd fleetd && pip install -e . && fleetd serve
@@ -35,6 +51,43 @@ cd fleetd && pip install -e . && fleetd serve
 cd pi-ext && npm install
 ln -s "$(pwd)" ~/.pi/agent/extensions/divide-and-conquer
 ```
+
+### Optional: admin UI, spend tracking & gateway auto-heal
+
+The gateway routes fine without a database. The LiteLLM **web UI** (login, virtual keys,
+spend/logs) needs Postgres — set `DATABASE_URL` in your env and the launcher bootstraps
+Prisma (client + schema) automatically on startup:
+
+```bash
+createdb litellm                                     # reuse the pgvector Postgres, separate DB
+export DATABASE_URL=postgresql://<user>:<pass>@127.0.0.1:5432/litellm
+python -m dnc_router.serve --config litellm-config.yaml --host 0.0.0.0 --port 4000
+#   → UI at http://<control-plane>:4000/ui  (login: admin + your LITELLM_MASTER_KEY)
+```
+
+**Auto-heal (LB-style):** `router_settings` in the config sets health-check / cooldown /
+retry / fallback; the custom strategy skips cooling-down and at-capacity (single-slot)
+nodes and rehashes their traffic to a live sibling. A downed host fails the fast `/health`
+probe; a slow generation keeps the probe green (it stays 200 through a multi-minute
+prefill) — so the two are never confused. **Sideways failover needs ≥2 nodes registered
+under a tier** (else it falls up a tier); register each BC-250 as its own `tier:s3` entry.
+
+## Fleet operations (M3)
+
+fleetd manages inference servers over SSH — deploy new ones, or **adopt** servers it didn't
+create (discover a running llama.cpp/vLLM, catalog + register with LiteLLM, monitor without
+touching its lifecycle) and optionally **migrate** them to a standard managed container:
+
+```bash
+fleetd discover <host>          # inspect a host's running inference server(s)
+fleetd deploy   <host> …        # idempotent play: pull image, render config, start, health, register
+# adopt / migrate: see fleetd/fleetd/plays.py + the /deploy TUI wizard in pi-ext
+```
+
+**BC-250 S3 nodes** (24× AMD, Vulkan/RADV — no ROCm) have their own container + serving
+guide, including the dynamic-VRAM BIOS split and the `--jinja`/generation-cap gotchas for
+reasoning models: see [`deploy/bc250/README.md`](deploy/bc250/README.md). Model-selection
+and VRAM math for the S2/S3 tiers: [`docs/model-selection-2026.md`](docs/model-selection-2026.md).
 
 ## Engineering personas (M5)
 
