@@ -17,7 +17,43 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import sys
 from contextlib import asynccontextmanager
+
+
+def _ensure_prisma_ready() -> None:
+    """Replicate the DB setup the stock `litellm` CLI does before serving.
+
+    The `litellm --config` CLI runs `prisma generate` (build the client) and `prisma db push`
+    (create the LiteLLM_* tables) before starting. Our direct-app launcher calls the proxy
+    lifespan straight, so it skips both — without this, a DB-backed proxy dies at startup with
+    "Client hasn't been generated" and then "relation LiteLLM_SpendLogs does not exist".
+
+    Idempotent and best-effort: no-op unless DATABASE_URL is set; generate only if the client
+    is missing; then sync the schema (a no-op when already in sync). Prisma reads DATABASE_URL
+    from the env, so source your .env before launching.
+    """
+    if not os.environ.get("DATABASE_URL"):
+        return
+    import litellm
+
+    schema = os.path.join(os.path.dirname(litellm.__file__), "proxy", "schema.prisma")
+    if not os.path.exists(schema):
+        print(f"[dnc] WARNING: litellm prisma schema not found at {schema}; skipping DB setup")
+        return
+
+    try:
+        from prisma import Prisma  # noqa: F401 — raises if the client isn't generated yet
+    except Exception:
+        print("[dnc] prisma client not generated — running `prisma generate`")
+        subprocess.run([sys.executable, "-m", "prisma", "generate", "--schema", schema], check=True)
+
+    print("[dnc] syncing DB schema (`prisma db push`)")
+    subprocess.run(
+        [sys.executable, "-m", "prisma", "db", "push", "--schema", schema, "--skip-generate"],
+        check=True,
+    )
 
 
 def main() -> None:
@@ -29,6 +65,10 @@ def main() -> None:
 
     # The proxy reads its config from this env var during its lifespan startup.
     os.environ["CONFIG_FILE_PATH"] = os.path.abspath(args.config)
+
+    # Match the litellm CLI's DB bootstrap (generate + db push) before the proxy starts;
+    # our direct-app launcher would otherwise skip it. No-op without DATABASE_URL.
+    _ensure_prisma_ready()
 
     import litellm.proxy.proxy_server as ps
 
