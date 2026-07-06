@@ -53,6 +53,14 @@ class Host(BaseModel):
     gpu_count: int = 0
     vram_gb_per_gpu: float = 0
     nic_gbps: float = 1.0
+    # Wake-on-LAN MAC of the ONBOARD NIC (not a USB NIC — USB loses power in S5 and
+    # can't wake). Required for scale-to-zero: fleetd sends the magic packet here to
+    # power a slept node back on. None = not WoL-capable / never powered off.
+    wol_mac: str | None = None
+    # never_sleep: exclude from scale-to-zero. Set for the always-on tiers (S1) and for
+    # the per-chassis FAN-CONTROLLER node — the middle node whose board fan header drives
+    # the chassis fans; powering it off kills cooling for all its chassis-mates.
+    never_sleep: bool = False
     labels: dict[str, str] = Field(default_factory=dict)
 
 

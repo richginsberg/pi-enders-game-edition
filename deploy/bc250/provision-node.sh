@@ -23,6 +23,18 @@ GOV_REPO="https://github.com/filippor/cyan-skillfish-governor.git"
 NIC="${1:-$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' | head -1)}"
 
 log() { echo "[provision] $*"; }
+NEED_REBOOT=0
+
+# 0. Preflight: disable rogue pre-existing inference services -------------------------
+# A reused node may carry an old auto-start (e.g. a hand-rolled llama.service from a
+# prior experiment) that fights our container for port 8080 / the GPU / memory and
+# manifests as mysterious contention (OOM thrash, "won't load"). Disable any system
+# unit whose ExecStart runs llama-server.
+for f in $(sudo grep -rilE "llama-server|llama\.cpp" /etc/systemd/system/*.service 2>/dev/null); do
+  svc=$(basename "$f")
+  log "disabling rogue pre-existing service: $svc"
+  sudo systemctl disable --now "$svc" 2>/dev/null || true
+done
 
 # 1. podman ---------------------------------------------------------------------------
 if command -v podman >/dev/null; then log "podman present"; else
@@ -124,4 +136,22 @@ else
   log "enabling linger for $USER"; sudo loginctl enable-linger "$USER"
 fi
 
+# 5. GTT size (CRITICAL for the dynamic-VRAM split) -----------------------------------
+# With 512 MB VRAM, the model lives in GTT (GART aperture into system RAM). amdgpu derives
+# GTT size from BIOS memory config — some BIOSes give only ~1/2 RAM (e.g. 7.6 GB), too
+# small for a 9 GB+ model → `radv: Not enough memory for command submission` / DeviceLost
+# crash. Force a large GTT on the kernel cmdline. Requires a reboot to take effect.
+GTT_MB=14336
+if grep -q "amdgpu.gttsize" /proc/cmdline; then
+  log "amdgpu.gttsize already on cmdline (GTT total: $(cat /sys/class/drm/card*/device/mem_info_gtt_total 2>/dev/null | head -1 | awk '{printf "%.0f MB", $1/1e6}'))"
+else
+  log "setting amdgpu.gttsize=$GTT_MB via grubby (REBOOT REQUIRED)"
+  sudo grubby --update-kernel=ALL --args="amdgpu.gttsize=$GTT_MB"
+  NEED_REBOOT=1
+fi
+
 echo "[provision] OS provisioning complete. WoL MAC: $(cat /sys/class/net/${NIC:-none}/address 2>/dev/null || echo unknown)"
+if [ "$NEED_REBOOT" = "1" ]; then
+  echo "[provision] *** REBOOT REQUIRED *** (amdgpu.gttsize) — after reboot verify:"
+  echo "[provision]   cat /sys/class/drm/card*/device/mem_info_gtt_total  # must exceed model+KV (~12 GB for 262k)"
+fi
