@@ -131,6 +131,18 @@ def select_deployment(
     return chosen
 
 
+def squad_for_deployment_id(members: list[dict], model_id: str) -> str | None:
+    """Map a LiteLLM deployment id (what the proxy returns as x-litellm-model-id) back to
+    its squad. Lets the gateway echo the RESOLVED squad on the response so a tier:auto
+    caller can see which tier actually served (the request-side hint only says what was
+    asked for). Returns None if the id isn't found or the deployment carries no squad."""
+    for d in members:
+        if str(d.get("model_info", {}).get("id")) == str(model_id):
+            squad = d.get("model_info", {}).get("dnc_squad")
+            return str(squad) if squad is not None else None
+    return None
+
+
 def _as_dict(deployment: Any) -> dict:
     """Normalize a router deployment (dict or pydantic Deployment) to a dict."""
     if isinstance(deployment, dict):

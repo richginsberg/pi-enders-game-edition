@@ -4,6 +4,7 @@ from dnc_router.strategy import (
     LoadTracker,
     pick_tier,
     select_deployment,
+    squad_for_deployment_id,
 )
 
 
@@ -190,3 +191,21 @@ def test_strategy_falls_back_to_model_list_without_get_model_list():
 def test_strategy_returns_none_when_group_empty():
     strat = DncRoutingStrategy(router=FakeRouter([dep("s1-a", "s1", "tier:s1")]))
     assert _run(strat, "tier:nonexistent") is None
+
+
+# --- squad_for_deployment_id (x-dnc-squad response header) --------------------
+def test_squad_for_deployment_id_maps_back():
+    members = [dep("s3-node-01", "s3", "tier:auto"), dep("glm-abc", "s0", "tier:auto")]
+    assert squad_for_deployment_id(members, "s3-node-01") == "s3"
+    assert squad_for_deployment_id(members, "glm-abc") == "s0"
+
+
+def test_squad_for_deployment_id_unknown_returns_none():
+    members = [dep("s3-node-01", "s3")]
+    assert squad_for_deployment_id(members, "missing") is None
+    assert squad_for_deployment_id([], "anything") is None
+
+
+def test_squad_for_deployment_id_no_squad_returns_none():
+    members = [{"model_info": {"id": "x"}}]  # deployment without dnc_squad
+    assert squad_for_deployment_id(members, "x") is None

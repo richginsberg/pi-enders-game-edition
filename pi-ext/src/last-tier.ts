@@ -9,11 +9,10 @@
  *   x-litellm-model-id        ->  the deployment id (our model_info.id, e.g. s3-node-01)
  * Header availability depends on transport; if absent we leave the last value up.
  *
- * Tier: for an explicit tier:sN selection ctx.model.id is exact. For tier:auto the
- * router resolves the squad server-side and does NOT echo it in a header today, so
- * we show the node (which reveals the squad to anyone who knows their fleet) and tag
- * the selection as "auto". A future router change could add an x-dnc-squad response
- * header to make the resolved tier exact here too.
+ * Tier: the gateway echoes the RESOLVED squad in x-dnc-squad (added by the DnC router
+ * middleware), so even a tier:auto turn shows the tier that actually served — not just
+ * what was requested. We fall back to the selected model id (exact for an explicit
+ * tier:sN) when the header is absent (e.g. a non-DnC gateway).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -28,9 +27,19 @@ export function nodeLabel(apiBase: string | undefined): string | undefined {
   }
 }
 
-/** Build the footer string from the selected model id + resolved node/deployment. */
-export function formatLast(modelId: string | undefined, node: string | undefined, deployId: string | undefined): string {
-  const tier = modelId && modelId.startsWith("tier:") ? modelId : (modelId ?? "?");
+/** Resolve the tier label: prefer the gateway's resolved squad, else the selected model id. */
+export function tierLabel(resolvedSquad: string | undefined, modelId: string | undefined): string {
+  if (resolvedSquad) return `tier:${resolvedSquad}`;
+  if (modelId) return modelId; // explicit tier:sN is already exact; else whatever was selected
+  return "?";
+}
+
+/** Build the footer string from the resolved tier + node/deployment. */
+export function formatLast(
+  tier: string,
+  node: string | undefined,
+  deployId: string | undefined,
+): string {
   const where = node ?? deployId ?? "?";
   const id = deployId && deployId !== where ? ` [${deployId}]` : "";
   return `fleet last: ${tier} · ${where}${id}`;
@@ -44,6 +53,7 @@ export function registerLastTier(pi: ExtensionAPI): void {
     const node = nodeLabel(headers["x-litellm-model-api-base"]);
     const deployId = headers["x-litellm-model-id"];
     if (!node && !deployId) return; // transport didn't surface headers — keep prior value
-    ctx.ui.setStatus("dnc-last", formatLast(ctx.model?.id, node, deployId));
+    const tier = tierLabel(headers["x-dnc-squad"], ctx.model?.id);
+    ctx.ui.setStatus("dnc-last", formatLast(tier, node, deployId));
   });
 }

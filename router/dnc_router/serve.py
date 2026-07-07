@@ -72,7 +72,31 @@ def main() -> None:
 
     import litellm.proxy.proxy_server as ps
 
-    from .strategy import DncRoutingStrategy
+    from .strategy import DncRoutingStrategy, _as_dict, squad_for_deployment_id
+
+    # Echo the RESOLVED squad on every response. The proxy already returns
+    # x-litellm-model-id (the deployment that served); we map it back to model_info.dnc_squad
+    # and stamp x-dnc-squad so a tier:auto caller can see which tier actually answered
+    # (the request-side x-dnc-tier/-complexity hint only says what was asked for). A plain
+    # response middleware keeps this independent of litellm's internal header plumbing, and
+    # works for streaming too (headers are set before the body streams). Best-effort: any
+    # lookup failure just omits the header.
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    async def _stamp_squad(request, call_next):
+        response = await call_next(request)
+        try:
+            model_id = response.headers.get("x-litellm-model-id")
+            if model_id and ps.llm_router is not None:
+                members = [_as_dict(d) for d in getattr(ps.llm_router, "model_list", []) or []]
+                squad = squad_for_deployment_id(members, model_id)
+                if squad:
+                    response.headers["x-dnc-squad"] = squad
+        except Exception:
+            pass
+        return response
+
+    ps.app.add_middleware(BaseHTTPMiddleware, dispatch=_stamp_squad)
 
     proxy_lifespan = ps.proxy_startup_event  # the proxy's own @asynccontextmanager
 
