@@ -117,7 +117,12 @@ model_list:
 router_settings:
   num_retries: 2                 # on failure, retry -> strategy re-picks (skips the cooled-down host)
   timeout: 900                   # per-request ceiling; sized for worst-case BC-250 prefill+gen, NOT liveness
-  allowed_fails: 2               # failures within the window before a deployment is cooled down
+  # allowed_fails=1, NOT 2: prefix-affinity is DETERMINISTIC, so a retry re-picks the SAME
+  # node until it's cooled down. With allowed_fails=2 the first request to a just-died node
+  # fails twice (retry hits it again) -> 500 before cooldown. Live 2-node failover test:
+  # allowed_fails=2 gave 7/8 (one 500); =1 cools the node on the first failure so the retry
+  # reroutes to the survivor -> clean failover.
+  allowed_fails: 1
   cooldown_time: 60              # seconds a failing deployment is pulled from rotation
   # If a whole tier is unreachable, fall UP a tier rather than error (S3->S2->S1).
   fallbacks:
