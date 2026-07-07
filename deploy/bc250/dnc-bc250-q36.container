@@ -1,0 +1,40 @@
+# Podman Quadlet for the BC-250 S3 serving container (rootless, systemd --user).
+#
+# Why a Quadlet instead of `podman generate systemd`: the generated units
+# (--sdnotify=conmon / --rm / --replace) + interactive `podman` commands proved
+# fragile on rootless nodes — the pause process hits "invalid internal status" when
+# accessed across sessions, causing masked/activating/crash-loop states. A Quadlet is
+# instantiated ONLY by the lingered boot-time user manager, in one stable context, so
+# no ad-hoc `podman run` is ever needed.
+#
+# Install: copy to ~/.config/containers/systemd/dnc-bc250-q36.container, enable linger,
+# then `systemctl --user daemon-reload && systemctl --user start dnc-bc250-q36` (or reboot).
+# Requires: image loaded (dnc/llamacpp-bc250:latest), model at ~/models/, GTT sized
+# (amdgpu.gttsize), governor + WoL from provision-node.sh.
+
+[Unit]
+Description=DnC BC-250 llama.cpp — Qwen3.6-35B-REAP (tier:s3)
+After=network-online.target
+
+[Container]
+ContainerName=dnc-bc250-q36
+Image=dnc/llamacpp-bc250:latest
+Entrypoint=llama-server
+# device + rootless GPU access + SELinux relabel bypass (renderD128 is world-rw)
+PodmanArgs=--security-opt label=disable --device /dev/dri --group-add keep-groups
+PublishPort=8080:8080
+Volume=%h/models/qwen3.6-35b-reap-Q3_K_M.gguf:/models/model.gguf:ro
+# llama-server flags (after the entrypoint). Production config: 262k single-slot,
+# q8 KV + flash-attn, --jinja (reasoning models won't emit EOS without it), generation
+# + reasoning caps to bound runaway loops.
+Exec=-m /models/model.gguf -ngl 99 -c 262144 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --temp 0.6 --jinja -n 8192 --repeat-penalty 1.1 --repeat-last-n 256 --reasoning-budget 4096 --host 0.0.0.0 --port 8080 --alias qwen3.6-35b-reap
+
+[Service]
+Restart=on-failure
+RestartSec=10
+# generous: cold load reads ~9 GB into GTT (conmon notifies on container start, not
+# model-ready, so this mainly bounds a genuinely stuck start)
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
