@@ -88,9 +88,13 @@ def main() -> int:
         print("=== PHASE 1 — ORCHESTRATE: tier:auto @ complexity=max (expect S0) ===")
         o = chat("Plan (do not implement) how you would split a repo audit into 8 parallel tasks.",
                  "tier:auto", "max", 64)
-        ok = o["squad"] == "s0"
-        print(f"  status={o['status']} squad={o['squad']} node={o['node']} "
-              f"{'✓ escalated to S0' if ok else '✗ did NOT resolve to S0'}")
+        if o["squad"] == "s0" and str(o["status"]) == "200":
+            verdict = "✓ escalated to S0"
+        elif str(o["status"]) in ("401", "403"):
+            verdict = "✗ reached gateway but S0 upstream rejected auth — check the S0 provider key"
+        else:
+            verdict = "✗ did NOT resolve to S0"
+        print(f"  status={o['status']} squad={o['squad']} node={o['node']} {verdict}")
 
     print(f"\n=== PHASE 2 — FAN-OUT: {N} concurrent {MODEL} requests (expect spread across S3) ===")
     tasks = [TASKS[i % len(TASKS)] + f" (variant {i})" for i in range(N)]
