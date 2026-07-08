@@ -149,13 +149,16 @@ fi
 # ttm.pages_limit (the operative one) — not gttsize — so a half-provisioned node is fixed.
 GTT_MB=14336
 TTM_PAGES=$(( GTT_MB * 256 ))   # 4 KB pages: 14336 MB * 256 = 3670016
-# pages_limit is a writable module param — apply live so THIS boot is fixed without a reboot.
-if [ -w /sys/module/ttm/parameters/pages_limit ]; then
-  cur=$(cat /sys/module/ttm/parameters/pages_limit)
-  if [ "$cur" -lt "$TTM_PAGES" ]; then
-    log "raising live ttm.pages_limit $cur -> $TTM_PAGES ($(( TTM_PAGES / 256 )) MB GTT)"
-    echo "$TTM_PAGES" | sudo tee /sys/module/ttm/parameters/pages_limit >/dev/null
-  fi
+# pages_limit is a root-writable module param. Apply it live so THIS boot is fixed without
+# a reboot. NOTE: the sysfs node is mode 0644 owned by root, so a `[ -w ]` test as the
+# provisioning (non-root) user is always false — we must just attempt the `sudo tee` and
+# check the resulting value, not pre-test writability.
+cur=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
+if [ "${cur:-0}" -lt "$TTM_PAGES" ]; then
+  log "raising live ttm.pages_limit ${cur:-0} -> $TTM_PAGES ($(( TTM_PAGES / 256 )) MB GTT)"
+  echo "$TTM_PAGES" | sudo tee /sys/module/ttm/parameters/pages_limit >/dev/null 2>&1 || true
+  now=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
+  [ "${now:-0}" -ge "$TTM_PAGES" ] || { log "live GTT write did not take — reboot needed"; NEED_REBOOT=1; }
 fi
 # Persist both on the kernel cmdline (survives reboot). grubby is idempotent per-arg.
 if grep -q "ttm.pages_limit=$TTM_PAGES" /proc/cmdline && grep -q "amdgpu.gttsize=$GTT_MB" /proc/cmdline; then
@@ -163,8 +166,6 @@ if grep -q "ttm.pages_limit=$TTM_PAGES" /proc/cmdline && grep -q "amdgpu.gttsize
 else
   log "persisting amdgpu.gttsize=$GTT_MB + ttm.pages_limit=$TTM_PAGES via grubby"
   sudo grubby --update-kernel=ALL --args="amdgpu.gttsize=$GTT_MB ttm.pages_limit=$TTM_PAGES"
-  # Reboot only needed if the live write above was NOT possible (e.g. param not writable).
-  [ -w /sys/module/ttm/parameters/pages_limit ] || NEED_REBOOT=1
 fi
 
 echo "[provision] OS provisioning complete. WoL MAC: $(cat /sys/class/net/${NIC:-none}/address 2>/dev/null || echo unknown)"
