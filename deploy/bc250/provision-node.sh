@@ -140,18 +140,35 @@ fi
 # With 512 MB VRAM, the model lives in GTT (GART aperture into system RAM). amdgpu derives
 # GTT size from BIOS memory config — some BIOSes give only ~1/2 RAM (e.g. 7.6 GB), too
 # small for a 9 GB+ model → `radv: Not enough memory for command submission` / DeviceLost
-# crash. Force a large GTT on the kernel cmdline. Requires a reboot to take effect.
+# crash.
+#
+# GOTCHA (learned on bc25005/.135): `amdgpu.gttsize` ALONE is NOT enough — the effective
+# GTT ceiling is TTM's `pages_limit`, which defaults to ~1/2 RAM. A node can boot with
+# amdgpu.gttsize=14336 yet still cap GTT at 7.6 GB because ttm.pages_limit was left at the
+# default. Known-good nodes carry BOTH args. So we set both and, crucially, guard on
+# ttm.pages_limit (the operative one) — not gttsize — so a half-provisioned node is fixed.
 GTT_MB=14336
-if grep -q "amdgpu.gttsize" /proc/cmdline; then
-  log "amdgpu.gttsize already on cmdline (GTT total: $(cat /sys/class/drm/card*/device/mem_info_gtt_total 2>/dev/null | head -1 | awk '{printf "%.0f MB", $1/1e6}'))"
+TTM_PAGES=$(( GTT_MB * 256 ))   # 4 KB pages: 14336 MB * 256 = 3670016
+# pages_limit is a writable module param — apply live so THIS boot is fixed without a reboot.
+if [ -w /sys/module/ttm/parameters/pages_limit ]; then
+  cur=$(cat /sys/module/ttm/parameters/pages_limit)
+  if [ "$cur" -lt "$TTM_PAGES" ]; then
+    log "raising live ttm.pages_limit $cur -> $TTM_PAGES ($(( TTM_PAGES / 256 )) MB GTT)"
+    echo "$TTM_PAGES" | sudo tee /sys/module/ttm/parameters/pages_limit >/dev/null
+  fi
+fi
+# Persist both on the kernel cmdline (survives reboot). grubby is idempotent per-arg.
+if grep -q "ttm.pages_limit=$TTM_PAGES" /proc/cmdline && grep -q "amdgpu.gttsize=$GTT_MB" /proc/cmdline; then
+  log "GTT cmdline already correct (ttm.pages_limit + amdgpu.gttsize)"
 else
-  log "setting amdgpu.gttsize=$GTT_MB via grubby (REBOOT REQUIRED)"
-  sudo grubby --update-kernel=ALL --args="amdgpu.gttsize=$GTT_MB"
-  NEED_REBOOT=1
+  log "persisting amdgpu.gttsize=$GTT_MB + ttm.pages_limit=$TTM_PAGES via grubby"
+  sudo grubby --update-kernel=ALL --args="amdgpu.gttsize=$GTT_MB ttm.pages_limit=$TTM_PAGES"
+  # Reboot only needed if the live write above was NOT possible (e.g. param not writable).
+  [ -w /sys/module/ttm/parameters/pages_limit ] || NEED_REBOOT=1
 fi
 
 echo "[provision] OS provisioning complete. WoL MAC: $(cat /sys/class/net/${NIC:-none}/address 2>/dev/null || echo unknown)"
+echo "[provision] GTT ceiling now: $(( $(cat /sys/module/ttm/parameters/pages_limit) / 256 )) MB (need >=12 GB for 262k)"
 if [ "$NEED_REBOOT" = "1" ]; then
-  echo "[provision] *** REBOOT REQUIRED *** (amdgpu.gttsize) — after reboot verify:"
-  echo "[provision]   cat /sys/class/drm/card*/device/mem_info_gtt_total  # must exceed model+KV (~12 GB for 262k)"
+  echo "[provision] *** REBOOT REQUIRED *** (GTT cmdline set but live write unavailable)"
 fi
