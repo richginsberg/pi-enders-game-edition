@@ -24,10 +24,17 @@ Entrypoint=llama-server
 PodmanArgs=--security-opt label=disable --device /dev/dri --group-add keep-groups
 PublishPort=8080:8080
 Volume=%h/models/qwen3.6-35b-reap-Q3_K_M.gguf:/models/model.gguf:ro
+# Fixed chat template (froggeric Qwen-Fixed-Chat-Templates): the GGUF's embedded template
+# uses `tool_call.arguments|items`, which llama.cpp's minja (C++ Jinja) can't parse for
+# tool-calling agent traffic → "Unable to generate parser for this template: Unknown
+# (built-in) filter 'items' for type String", breaking every fan-out agent turn. This
+# override rewrites the offending filters to minja-safe native loops. Ship it beside the
+# model at %h/models/qwen36-tools.jinja and load with --chat-template-file below.
+Volume=%h/models/qwen36-tools.jinja:/models/qwen36-tools.jinja:ro
 # llama-server flags (after the entrypoint). Production config: 262k single-slot,
 # q8 KV + flash-attn, --jinja (reasoning models won't emit EOS without it), generation
 # + reasoning caps to bound runaway loops.
-Exec=-m /models/model.gguf -ngl 99 -c 262144 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --temp 0.6 --jinja -n 8192 --repeat-penalty 1.1 --repeat-last-n 256 --reasoning-budget 4096 --host 0.0.0.0 --port 8080 --alias qwen3.6-35b-reap
+Exec=-m /models/model.gguf -ngl 99 -c 262144 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --temp 0.6 --jinja -n 8192 --repeat-penalty 1.1 --repeat-last-n 256 --reasoning-budget 4096 --host 0.0.0.0 --port 8080 --chat-template-file /models/qwen36-tools.jinja --alias qwen3.6-35b-reap
 
 [Service]
 Restart=on-failure
