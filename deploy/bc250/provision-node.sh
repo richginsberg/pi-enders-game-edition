@@ -167,6 +167,17 @@ else
   log "persisting amdgpu.gttsize=$GTT_MB + ttm.pages_limit=$TTM_PAGES via grubby"
   sudo grubby --update-kernel=ALL --args="amdgpu.gttsize=$GTT_MB ttm.pages_limit=$TTM_PAGES"
 fi
+# The amdgpu GTT *domain* size (mem_info_gtt_total) is fixed at module-init from
+# amdgpu.gttsize and CANNOT be resized live — the ttm.pages_limit write above only lifts
+# TTM's global ceiling. So if this boot came up with a small GTT domain (fresh node that
+# never had amdgpu.gttsize on its cmdline), a reboot is REQUIRED to activate it, even though
+# the live write succeeded. Symptom if skipped: model loads but compute dies with
+# 'amdgpu_vm_validate() failed / Not enough memory for command submission' → RADV segfault.
+gtt_dom_mb=$(( $(cat /sys/class/drm/card*/device/mem_info_gtt_total 2>/dev/null | head -1) / 1024 / 1024 ))
+if [ "${gtt_dom_mb:-0}" -lt 12000 ]; then
+  log "amdgpu GTT domain is only ${gtt_dom_mb} MB (need >=12 GB) — reboot required to apply amdgpu.gttsize"
+  NEED_REBOOT=1
+fi
 
 echo "[provision] OS provisioning complete. WoL MAC: $(cat /sys/class/net/${NIC:-none}/address 2>/dev/null || echo unknown)"
 echo "[provision] GTT ceiling now: $(( $(cat /sys/module/ttm/parameters/pages_limit) / 256 )) MB (need >=12 GB for 262k)"
