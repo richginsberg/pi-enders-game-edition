@@ -53,9 +53,30 @@ def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     return chars // 4
 
 
+def _first_user_content(messages: list[dict[str, Any]]) -> str | None:
+    for m in messages:
+        if m.get("role") == "user":
+            c = m.get("content", "")
+            return c if isinstance(c, str) else str(c)
+    return None
+
+
 def prefix_hash(messages: list[dict[str, Any]]) -> str:
-    blob = "".join(str(m.get("content", "")) for m in messages).encode()[:PREFIX_WINDOW_BYTES]
-    return hashlib.sha256(blob).hexdigest()
+    """Affinity key: stable across a session's turns, distinct between sessions.
+
+    We hash the FIRST USER MESSAGE (the task), not the leading bytes of the whole
+    conversation. Fan-out workers share an identical system prompt + tool definitions,
+    so hashing the concatenated head sent every worker to the SAME node (observed: 8
+    workers all pinned to one BC-250, single-slot, overloaded -> connection errors, 5
+    nodes idle). The first user turn is what actually distinguishes workers, and it does
+    not change as a worker's conversation grows — so distinct workers spread across nodes
+    while each worker's own turns stay pinned (KV-cache reuse, the point of affinity).
+    The shared system prompt is just re-prefilled once per node (cheap, then cached).
+    Falls back to the concatenated-prefix when there is no user message."""
+    key = _first_user_content(messages)
+    if not key:
+        key = "".join(str(m.get("content", "")) for m in messages)
+    return hashlib.sha256(key.encode()[:PREFIX_WINDOW_BYTES]).hexdigest()
 
 
 def pick_tier(requested: str, headers: dict[str, str], messages: list[dict[str, Any]]) -> str:

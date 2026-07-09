@@ -3,6 +3,7 @@ from dnc_router.strategy import (
     DncRoutingStrategy,
     LoadTracker,
     degrade_squad,
+    prefix_hash,
     pick_tier,
     select_deployment,
     squad_for_deployment_id,
@@ -239,3 +240,40 @@ def test_strategy_medium_default_routes_to_s3_when_s2_absent():
     strat = DncRoutingStrategy(router=FakeRouter(deployments))
     for _ in range(4):
         assert _run(strat, "tier:auto", {})["model_info"]["dnc_squad"] == "s3"
+
+
+# --- prefix_hash keys on the first user message (fan-out spread) ---------------------
+def _sys_user(system, user):
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def test_prefix_hash_ignores_shared_system_prompt():
+    # workers share an identical system prompt but have distinct tasks -> distinct hashes
+    a = prefix_hash(_sys_user("SHARED AGENT PROMPT " * 300, "write fizzbuzz in python"))
+    b = prefix_hash(_sys_user("SHARED AGENT PROMPT " * 300, "write quicksort in rust"))
+    assert a != b
+
+
+def test_prefix_hash_stable_across_a_workers_turns():
+    # same first user message, later turns appended -> same hash (stays pinned)
+    t1 = prefix_hash(_sys_user("SYS", "task X"))
+    t2 = prefix_hash([{"role": "system", "content": "SYS"}, {"role": "user", "content": "task X"},
+                      {"role": "assistant", "content": "step"}, {"role": "tool", "content": "result"}])
+    assert t1 == t2
+
+
+def test_prefix_hash_indifferent_to_system_change():
+    # distinguishing key is the user task, not the system prompt
+    assert prefix_hash(_sys_user("SYS A", "same task")) == prefix_hash(_sys_user("SYS B", "same task"))
+
+
+def test_fanout_workers_spread_across_s3_nodes():
+    # 8 workers: identical system prompt, distinct tasks -> should touch >1 node
+    nodes = [dep(f"s3-{i}", "s3") for i in range(7)]
+    tracker = LoadTracker()
+    seen = set()
+    for i in range(8):
+        chosen = select_deployment(nodes, _sys_user("IDENTICAL SYSTEM PROMPT " * 200, f"unique task {i}"),
+                                   tracker, now=1.0)
+        seen.add(chosen["model_info"]["id"])
+    assert len(seen) > 1  # not all pinned to one node
