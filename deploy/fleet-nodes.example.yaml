@@ -1,0 +1,10 @@
+# Template for fleetpower.py's node inventory. Copy to a LOCAL, gitignored path
+# (e.g. ~/dnc/fleet-nodes.yaml) and fill in real IPs/MACs — do NOT commit those.
+#   cp deploy/fleet-nodes.example.yaml ~/dnc/fleet-nodes.yaml
+# Find a node's WoL MAC:  ssh <node> 'cat /sys/class/net/<iface>/address'
+broadcast: 192.168.1.255      # your LAN broadcast (WoL is broadcast, not routed)
+ssh_user: youruser            # user with passwordless sudo on the nodes (for OFF)
+nodes:
+  bc25001: { ip: 192.168.1.101, mac: "aa:bb:cc:dd:ee:01", tier: s3 }
+  bc25002: { ip: 192.168.1.102, mac: "aa:bb:cc:dd:ee:02", tier: s3, never_sleep: true }  # e.g. fan controller
+  # ... one line per node; tier groups them for --tier
