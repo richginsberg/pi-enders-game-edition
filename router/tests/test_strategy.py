@@ -2,6 +2,7 @@ from dnc_router.strategy import (
     SPILL_THRESHOLD,
     DncRoutingStrategy,
     LoadTracker,
+    degrade_squad,
     pick_tier,
     select_deployment,
     squad_for_deployment_id,
@@ -209,3 +210,32 @@ def test_squad_for_deployment_id_unknown_returns_none():
 def test_squad_for_deployment_id_no_squad_returns_none():
     members = [{"model_info": {"id": "x"}}]  # deployment without dnc_squad
     assert squad_for_deployment_id(members, "x") is None
+
+
+# --- degrade_squad (deterministic tier degradation when a squad has no members) ------
+def test_degrade_noop_when_squad_available():
+    assert degrade_squad("s3", {"s0", "s3"}) == "s3"
+    assert degrade_squad("s0", {"s0", "s1", "s3"}) == "s0"
+
+
+def test_degrade_medium_s2_offline_goes_to_s3():
+    # the real fleet case: medium -> s2, but only s0/s1/s3 configured -> S3 (wide fleet)
+    assert degrade_squad("s2", {"s0", "s1", "s3"}) == "s3"
+
+
+def test_degrade_prefers_toward_s3_then_up():
+    assert degrade_squad("s1", {"s0", "s3"}) == "s3"      # down to wide fleet first
+    assert degrade_squad("s0", {"s1", "s2"}) == "s1"      # nothing below-adjacent gap: nearest down
+    assert degrade_squad("s1", {"s0"}) == "s0"            # only up available -> escalate
+
+
+def test_degrade_unknown_squad_passes_through():
+    assert degrade_squad("weird", {"s3"}) == "weird"
+
+
+def test_strategy_medium_default_routes_to_s3_when_s2_absent():
+    # end-to-end: no complexity header -> medium -> s2 absent -> degrade -> S3
+    deployments = [dep("s0-a", "s0"), dep("s1-a", "s1"), dep("s3-a", "s3"), dep("s3-b", "s3")]
+    strat = DncRoutingStrategy(router=FakeRouter(deployments))
+    for _ in range(4):
+        assert _run(strat, "tier:auto", {})["model_info"]["dnc_squad"] == "s3"

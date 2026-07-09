@@ -79,6 +79,30 @@ def pick_tier(requested: str, headers: dict[str, str], messages: list[dict[str, 
     return order[idx]
 
 
+# Tiers from frontier (s0) to the wide/cheap fleet (s3).
+TIER_ORDER = ["s0", "s1", "s2", "s3"]
+
+
+def degrade_squad(requested: str, available: set[str] | frozenset[str]) -> str:
+    """Resolve a squad that actually has configured deployments.
+
+    If the requested squad has no members (e.g. S2 is offline), degrade DETERMINISTICALLY
+    to the nearest tier that does — preferring the wide/always-on S3 fleet first, then
+    escalating upward. This replaces the old "no members -> fall back to the ENTIRE pool"
+    behaviour, which scattered a squad's traffic across every tier (so a worker meant for
+    S2 could randomly land on S1/S0). Deterministic degradation keeps affinity/spread within
+    one tier and, crucially, routes the common `medium -> s2(offline)` default onto S3
+    instead of a mixed pool. litellm's request-level fallback still escalates UP on real
+    failures; this only picks the squad to select within. Unknown squads pass through."""
+    if requested in available or requested not in TIER_ORDER:
+        return requested
+    i = TIER_ORDER.index(requested)
+    for alt in TIER_ORDER[i + 1:] + TIER_ORDER[:i][::-1]:  # toward s3 first, then up toward s0
+        if alt in available:
+            return alt
+    return requested
+
+
 class LoadTracker:
     """Rolling count of recent selections per deployment id (load proxy)."""
 
@@ -216,6 +240,11 @@ class DncRoutingStrategy:
         members = self._members(model)
         if not members:
             return None
+        # Degrade to a squad that actually has members (e.g. medium -> s2 offline -> s3)
+        # BEFORE filtering, so we route deterministically within one tier instead of
+        # scattering across the whole pool.
+        available = {d.get("model_info", {}).get("dnc_squad") for d in members}
+        squad = degrade_squad(squad, available)
         candidates = [d for d in members if d.get("model_info", {}).get("dnc_squad") == squad] or members
         return select_deployment(
             candidates,
