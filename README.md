@@ -106,6 +106,33 @@ npx @chankov/agent-skills init        # installs the 15 stock personas into agen
   model means persona subagents route through the custom router (complexity + cache
   affinity) just like interactive sessions.
 
+Each persona is a Markdown agent definition (name/description/model frontmatter). The
+`model:` field binds it to a squad — heavy design/review roles pin to the frontier
+(`s0`/`s1`), routine build/test roles to `s2`, docs to the wide `s3` fleet, and a few
+stay on `tier:auto` for per-turn complexity routing:
+
+| Persona | Bound tier | File |
+|---|---|---|
+| Principal Engineer | `fleet/tier:s0` | [principal-engineer.md](agents/principal-engineer.md) |
+| Product Manager | `fleet/tier:s0` | [product-manager.md](agents/product-manager.md) |
+| Engineering Manager | `fleet/tier:s1` | [engineering-manager.md](agents/engineering-manager.md) |
+| ML / Inference Engineer | `fleet/tier:s1` | [ml-inference-engineer.md](agents/ml-inference-engineer.md) |
+| Build / Release Manager | `fleet/tier:s2` | [build-release-manager.md](agents/build-release-manager.md) |
+| Designer | `fleet/tier:s2` | [designer.md](agents/designer.md) |
+| Observability Engineer | `fleet/tier:s2` | [observability-engineer.md](agents/observability-engineer.md) |
+| Platform Engineer | `fleet/tier:s2` | [platform-engineer.md](agents/platform-engineer.md) |
+| Quality Assurance | `fleet/tier:s2` | [quality-assurance.md](agents/quality-assurance.md) |
+| Technical Writer | `fleet/tier:s3` | [technical-writer.md](agents/technical-writer.md) |
+| Backend Engineer | `fleet/tier:auto` | [backend-engineer.md](agents/backend-engineer.md) |
+| Data Engineer | `fleet/tier:auto` | [data-engineer.md](agents/data-engineer.md) |
+| Frontend Engineer | `fleet/tier:auto` | [frontend-engineer.md](agents/frontend-engineer.md) |
+| SRE | `fleet/tier:auto` | [sre.md](agents/sre.md) |
+
+- **Making them executable**: Pi discovers spawnable agents from `~/.pi/agent/agents/`
+  (global) and `<repo>/.pi/agents/` (project). Install with
+  `cp agents/*.md ~/.pi/agent/agents/` so they appear in the subagent list alongside
+  Pi's built-ins (`worker`, `planner`, …) in any session.
+
 ## Long-term context (M5)
 
 Shared semantic memory, partitioned by repo, in Postgres + pgvector. Durable facts

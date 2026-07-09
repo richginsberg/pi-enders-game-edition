@@ -46,7 +46,7 @@ export function formatLast(
 }
 
 export function registerLastTier(pi: ExtensionAPI): void {
-  pi.on("after_provider_response", (event, ctx) => {
+  pi.on("after_provider_response", async (event, ctx) => {
     // Only annotate fleet-served turns; leave other providers' footer untouched.
     if (ctx.model?.provider !== "fleet") return;
     const headers = (event.headers ?? {}) as Record<string, string>;
@@ -55,5 +55,15 @@ export function registerLastTier(pi: ExtensionAPI): void {
     if (!node && !deployId) return; // transport didn't surface headers — keep prior value
     const tier = tierLabel(headers["x-dnc-squad"], ctx.model?.id);
     ctx.ui.setStatus("dnc-last", formatLast(tier, node, deployId));
+    // Ledger the per-session routing so /fleet-routing can attribute each subagent to a
+    // node (the orchestrator can't — it never sees the workers' response headers).
+    // Dynamic import keeps this module's static graph free of node:fs (unit tests load it directly).
+    try {
+      const { recordRouting, sessionLabel } = await import("./fleet-routing.js");
+      const session = sessionLabel(ctx.sessionManager?.getSessionFile?.());
+      recordRouting(process.cwd(), { ts: Date.now(), session, tier, node: node ?? (deployId as string) });
+    } catch {
+      /* ledger is diagnostic only */
+    }
   });
 }

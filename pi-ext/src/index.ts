@@ -9,6 +9,7 @@ import { registerDeployCommand } from "./deploy-command.js";
 import { registerFleetCommand } from "./fleet-command.js";
 import { registerFleetProvider } from "./provider.js";
 import { registerLastTier } from "./last-tier.js";
+import { registerFleetRouting } from "./fleet-routing.js";
 import { registerTasksCommand } from "./tasks-command.js";
 import { registerTierHints } from "./tier-hints.js";
 
@@ -21,4 +22,5 @@ export default async function (pi: ExtensionAPI) {
   registerContextInjection(pi);
   registerContextDistill(pi);
   registerLastTier(pi);
+  registerFleetRouting(pi);
 }
