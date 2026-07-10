@@ -20,26 +20,26 @@ bulk implementation → complexity-routed `tier:auto`; cheap mechanical work →
 | **product-manager** *(added)* | `fleet/tier:s0` | `fleet/tier:s1` | Scoping/prioritization reasoning; low volume |
 | **principal-engineer** *(added)* | `fleet/tier:s0` | `fleet/tier:s1` | System design + final sign-off on risky changes |
 | **engineering-manager** *(added)* | `fleet/tier:s1` | `fleet/tier:s0` | Delivery coordination/sequencing; low volume, high leverage |
-| **frontend-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:s2` | Bulk UI implementation; complexity-routed |
-| **backend-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:s2` | Bulk server implementation; complexity-routed |
-| **quality-assurance** *(added)* | `fleet/tier:s2` | `fleet/tier:auto` | Test strategy + acceptance; complements test-engineer |
-| **build-release-manager** *(added)* | `fleet/tier:s2` | `fleet/tier:auto` | Release process/versioning; complements releaser |
-| **platform-engineer** *(added)* | `fleet/tier:s2` | `fleet/tier:s1` | IaC/CI/tooling; escalates for hard infra design |
-| **observability-engineer** *(added)* | `fleet/tier:s2` | `fleet/tier:auto` | Instrumentation, dashboards, alerts |
+| **frontend-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Bulk UI implementation; complexity-routed |
+| **backend-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Bulk server implementation; complexity-routed |
+| **quality-assurance** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Test strategy + acceptance; complements test-engineer |
+| **build-release-manager** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Release process/versioning; complements releaser |
+| **platform-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:s1` | IaC/CI/tooling; escalates for hard infra design |
+| **observability-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Instrumentation, dashboards, alerts |
 | **sre** *(added)* | `fleet/tier:auto` | `fleet/tier:s1` | Routine reliability mid-tier; hard incidents escalate |
-| **designer** *(added)* | `fleet/tier:s2` | `fleet/tier:s1` | UX/interaction/visual design + accessibility |
+| **designer** *(added)* | `fleet/tier:auto` | `fleet/tier:s1` | UX/interaction/visual design + accessibility |
 | **ml-inference-engineer** *(added)* | `fleet/tier:s1` | `fleet/tier:s0` | Serving/quant/tuning — the fleet's core competency |
-| **data-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:s2` | Pipelines, ETL, embedding ingestion into pgvector |
-| **technical-writer** *(added)* | `fleet/tier:s3` | `fleet/tier:s2` | User-facing docs; complements inline `documenter` |
+| **data-engineer** *(added)* | `fleet/tier:auto` | `fleet/tier:auto` | Pipelines, ETL, embedding ingestion into pgvector |
+| **technical-writer** *(added)* | `fleet/tier:s3` | `fleet/tier:auto` | User-facing docs; complements inline `documenter` |
 | architect | `fleet/tier:s1` | `fleet/tier:s0` | Structural design; heavy but frequent |
 | planner | `fleet/tier:auto` | `fleet/tier:s1` | Complexity-routed; escalates when hard |
-| builder | `fleet/tier:auto` | `fleet/tier:s2` | Bulk implementation; router sizes per subtask |
-| test-engineer | `fleet/tier:s2` | `fleet/tier:auto` | Test authoring/running; mid tier |
-| code-reviewer | `fleet/tier:s2` | `fleet/tier:s1` | Routine review; escalate high-stakes to Principal |
+| builder | `fleet/tier:auto` | `fleet/tier:auto` | Bulk implementation; router sizes per subtask |
+| test-engineer | `fleet/tier:auto` | `fleet/tier:auto` | Test authoring/running; mid tier |
+| code-reviewer | `fleet/tier:auto` | `fleet/tier:s1` | Routine review; escalate high-stakes to Principal |
 | security-auditor | `fleet/tier:s1` | `fleet/tier:s0` | High-stakes correctness; larger models |
-| web-performance-auditor | `fleet/tier:s2` | — | Analysis, mid tier |
-| documenter | `fleet/tier:s3` | `fleet/tier:s2` | Summarization; cheap/wide squad |
-| releaser | `fleet/tier:s2` | — | Mechanical with judgment |
+| web-performance-auditor | `fleet/tier:auto` | — | Analysis, mid tier |
+| documenter | `fleet/tier:s3` | `fleet/tier:auto` | Summarization; cheap/wide squad |
+| releaser | `fleet/tier:auto` | — | Mechanical with judgment |
 | researcher | `fleet/tier:auto` | `fleet/tier:s1` | Depth varies; complexity-routed |
 | deep-researcher | `fleet/tier:s0` | `fleet/tier:s1` | Deepest synthesis; frontier |
 

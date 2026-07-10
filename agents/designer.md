@@ -5,9 +5,9 @@ description: >-
   patterns, and visual/accessibility standards. Use before UI is built and to review
   the built result against the intended design.
 access: read-only
-model: fleet/tier:s2
+model: fleet/tier:auto
 models:
-  - fleet/tier:s2
+  - fleet/tier:auto
   - fleet/tier:s1
 ---
 

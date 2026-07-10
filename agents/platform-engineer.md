@@ -5,9 +5,9 @@ description: >-
   tooling, and the paved paths other engineers build on. Use for infra changes,
   deployment plumbing, and developer-experience work.
 access: rw
-model: fleet/tier:s2
+model: fleet/tier:auto
 models:
-  - fleet/tier:s2
+  - fleet/tier:auto
   - fleet/tier:s1
 ---
 

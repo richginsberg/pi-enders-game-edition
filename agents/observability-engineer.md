@@ -5,9 +5,8 @@ description: >-
   dashboards, and actionable alerts. Use when adding instrumentation, building
   dashboards, or fixing noisy/missing alerting.
 access: rw
-model: fleet/tier:s2
+model: fleet/tier:auto
 models:
-  - fleet/tier:s2
   - fleet/tier:auto
 ---
 

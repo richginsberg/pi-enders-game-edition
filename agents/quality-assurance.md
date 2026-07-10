@@ -5,9 +5,8 @@ description: >-
   testing, and whether a change actually meets its acceptance criteria. Complements
   test-engineer (who writes/runs the tests). Use before sign-off on a feature.
 access: read-only
-model: fleet/tier:s2
+model: fleet/tier:auto
 models:
-  - fleet/tier:s2
   - fleet/tier:auto
 ---
 

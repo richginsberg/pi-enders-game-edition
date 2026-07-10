@@ -5,9 +5,8 @@ description: >-
   rollback policy. Complements the stock `releaser` (which executes a release) by
   owning how and when releases happen. Use when shipping a version or fixing the build.
 access: rw
-model: fleet/tier:s2
+model: fleet/tier:auto
 models:
-  - fleet/tier:s2
   - fleet/tier:auto
 ---
 
