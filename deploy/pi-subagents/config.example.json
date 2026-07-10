@@ -1,12 +1,22 @@
 {
   "_comment": "pi-subagents scaling caps. Install to ~/.pi/agent/extensions/subagent/config.json on the box running Pi, then /reload. Defaults are far too small for a real fleet (concurrency 4, maxTasks 8, globalConcurrencyLimit 20).",
   "globalConcurrencyLimit": 64,
-  "parallel": { "maxTasks": 64, "concurrency": 24 },
+  "parallel": {
+    "maxTasks": 64,
+    "concurrency": 24
+  },
   "_notes": {
     "parallel.concurrency": "workers run simultaneously; set ~= live S3 node count (2x 4U12G chassis = 24). Excess just queues at the single-slot nodes.",
     "parallel.maxTasks": "max tasks per one subagent(tasks:[...]) batch; raise for dozens of workers.",
     "globalConcurrencyLimit": "global simultaneous cap across a run; keep >= concurrency.",
     "orchestrator_load": "the box running Pi executes N nested agent loops (mostly I/O-bound waiting on the gateway); very large N loads that box, not the fleet.",
-    "intercomBridge": "add {\"intercomBridge\": {\"enabled\": false}} to hard-stop workers detaching to 'coordinate' if the persona fan-out clause isn't enough."
+    "intercomBridge": "mode:'off' fully disables the inter-agent coordination bridge \u2014 stops workers detaching to 'coordinate/hand off' (the 'Detached for intercom coordination' behavior). Belt-and-suspenders with the persona fan-out clause.",
+    "control.needsAttentionAfterMs": "ms before a running subagent is flagged 'needs attention' (default 60000). Slow-but-working agents (e.g. principal-engineer running code, 4-7min) false-alarm at 60s; 300000 (5min) still catches genuinely stuck ones."
+  },
+  "intercomBridge": {
+    "mode": "off"
+  },
+  "control": {
+    "needsAttentionAfterMs": 300000
   }
 }

@@ -39,10 +39,15 @@ write code yourself.**
 
 **Rules you MUST include in every subagent task you spawn:**
 - Complete the task fully and **write your file(s) now** with the `write` tool.
+- **Write to the EXACT repo-relative path given** (e.g. `backend/api.py` under the repo
+  root, `~/code/testrepo`). Do NOT invent subdirectories (no `test4/…`, no `src/…`), rename,
+  or write anywhere else. Getting the path wrong = the file is missing.
 - Work **standalone**. Do **NOT** detach, defer, wait for, coordinate with, or hand off to
   any other agent. Ignore any "coordinate with…" or "hand off to…" instinct — there is no
   live channel; just produce your own deliverable and return.
-- Return only once your file exists on disk.
+- **Return a one-line confirmation of the absolute path you wrote** (e.g.
+  `wrote /home/…/testrepo/backend/api.py`) so the orchestrator can verify without guessing.
+- Return only once your file exists on disk at that exact path.
 
 **Wave 1 — Discovery & design** (ONE parallel `subagent` call with a 2-entry `tasks` array):
 - `product-manager` → `docs/requirements.md` (user stories + acceptance criteria)
