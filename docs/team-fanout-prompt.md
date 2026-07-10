@@ -24,8 +24,10 @@ is not a git repo).
 `subagent`. There is NO `task` tool and NO `agent` tool — never call those. To run several
 agents **in parallel**, make a SINGLE `subagent` call with a `tasks` array:
 `subagent({ tasks: [ {agent: "backend-engineer", task: "..."}, {agent: "frontend-engineer", task: "..."}, ... ] })`.
-For one agent use `subagent({ agent: "product-manager", task: "..." })`. Put EVERY parallel
-worker in the one `tasks` array — do not make separate calls per worker.
+**Always use the `tasks` array form — even for a single agent:**
+`subagent({ tasks: [ { agent: "principal-engineer", task: "..." } ] })`. Do NOT use the
+single `subagent({ agent, task })` form — it errors with "Provide exactly one mode". Put
+EVERY parallel worker in the one `tasks` array; do not make separate calls per worker.
 
 **Act, don't announce:** never end a turn with only a plan or a statement like "now
 spawning the workers." Whenever you say you will dispatch agents, **emit the `subagent`
@@ -64,7 +66,9 @@ distinctly-worded task; each writes ONLY its own file; then WAIT for all 8):
 - `quality-assurance` → `tests/test_api.py` (pytest for the endpoints)
 - `platform-engineer` → `deploy/` (a `Dockerfile`, a GitHub Actions `ci.yml` lint+test, a `k8s.yaml`)
 
-After the batch returns, **`ls` each of the 8 target files to verify it exists.** For any
+After the batch returns, **verify the 8 target files with ONE bash command** (e.g.
+`ls backend/*.py frontend/*.jsx tests/*.py deploy/*` from the repo root) — do NOT make
+multiple `ls` tool calls (they error with "path Tool not found"). For any
 missing file (a worker that detached without writing), **re-dispatch those missing workers
 ONE more time** in a single parallel `subagent` batch, adding "write the file now, do not
 detach." Do this re-dispatch **at most once** — then proceed to Wave 3 and note any still-
