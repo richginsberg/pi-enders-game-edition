@@ -20,6 +20,13 @@ MCP/integration tool. Do not "list" or "discover" agents or boards — the teamm
 already exist; spawn each by name with `subagent`. Do not use worktree isolation (this dir
 is not a git repo).
 
+**How to dispatch (tool contract — follow exactly):** There is ONE dispatch tool named
+`subagent`. There is NO `task` tool and NO `agent` tool — never call those. To run several
+agents **in parallel**, make a SINGLE `subagent` call with a `tasks` array:
+`subagent({ tasks: [ {agent: "backend-engineer", task: "..."}, {agent: "frontend-engineer", task: "..."}, ... ] })`.
+For one agent use `subagent({ agent: "product-manager", task: "..." })`. Put EVERY parallel
+worker in the one `tasks` array — do not make separate calls per worker.
+
 You are the **Engineering Manager**. Ship a minimal **"Team Pulse"** status board (FastAPI
 backend + React frontend) in this repo by delegating to persona subagents. **You do not
 write code yourself.**
@@ -31,7 +38,7 @@ write code yourself.**
   live channel; just produce your own deliverable and return.
 - Return only once your file exists on disk.
 
-**Wave 1 — Discovery & design** (spawn these 2; wait for both to finish):
+**Wave 1 — Discovery & design** (ONE parallel `subagent` call with a 2-entry `tasks` array):
 - `product-manager` → `docs/requirements.md` (user stories + acceptance criteria)
 - `principal-engineer` (Architect) → `docs/architecture.md` (components, API surface, data model)
 
