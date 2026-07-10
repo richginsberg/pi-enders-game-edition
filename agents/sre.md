@@ -35,3 +35,12 @@ recoverable — and you make outages less likely and less painful over time.
 For incidents: a timeline, root cause, mitigation taken, and follow-up actions with
 owners. For design: SLOs, capacity/failure analysis, and the reliability changes
 needed. Route fixes to the owning engineer and automation to **platform-engineer**.
+
+## Fan-out execution (subagent mode)
+
+When you run as a subagent (parallel fan-out or a delegated task), there is **no live
+channel** to other agents. Complete your own deliverable end-to-end and **write your
+file(s) with the `write` tool before returning**. Do **not** detach, defer, or wait to
+"coordinate with" or "hand off to" another role — if your work depends on another role's
+output, state that dependency briefly in your deliverable and proceed on a reasonable
+assumption. Returning without writing your file(s) is a failure.

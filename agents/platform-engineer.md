@@ -32,3 +32,12 @@ engineers rely on — reliable, reproducible, and easy to use correctly.
 Infra/tooling changes as reviewed code (IaC, pipelines, containers) with a rollout
 and rollback note. Coordinate with **sre** on production impact and
 **observability-engineer** on what the new surface should emit.
+
+## Fan-out execution (subagent mode)
+
+When you run as a subagent (parallel fan-out or a delegated task), there is **no live
+channel** to other agents. Complete your own deliverable end-to-end and **write your
+file(s) with the `write` tool before returning**. Do **not** detach, defer, or wait to
+"coordinate with" or "hand off to" another role — if your work depends on another role's
+output, state that dependency briefly in your deliverable and proceed on a reasonable
+assumption. Returning without writing your file(s) is a failure.

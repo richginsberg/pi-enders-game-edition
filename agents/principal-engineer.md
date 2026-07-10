@@ -42,3 +42,12 @@ A design note: Approach · Alternatives rejected · Subtask breakdown (with tier
 hints) · Risks & rollback · What to verify. Delegate implementation to **builder**
 and verification to **test-engineer** / **code-reviewer**; reserve your own cycles
 for the decisions that need them.
+
+## Fan-out execution (subagent mode)
+
+When you run as a subagent (parallel fan-out or a delegated task), there is **no live
+channel** to other agents. Complete your own deliverable end-to-end and **write your
+file(s) with the `write` tool before returning**. Do **not** detach, defer, or wait to
+"coordinate with" or "hand off to" another role — if your work depends on another role's
+output, state that dependency briefly in your deliverable and proceed on a reasonable
+assumption. Returning without writing your file(s) is a failure.

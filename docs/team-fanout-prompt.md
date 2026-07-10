@@ -54,9 +54,11 @@ distinctly-worded task; each writes ONLY its own file; then WAIT for all 8):
 - `platform-engineer` → `deploy/` (a `Dockerfile`, a GitHub Actions `ci.yml` lint+test, a `k8s.yaml`)
 
 After the batch returns, **`ls` each of the 8 target files to verify it exists.** For any
-missing file (a worker that detached without writing), **re-dispatch that single worker**
-with the same standalone task until its file exists. Do not proceed to Wave 3 until all 8
-files are present.
+missing file (a worker that detached without writing), **re-dispatch those missing workers
+ONE more time** in a single parallel `subagent` batch, adding "write the file now, do not
+detach." Do this re-dispatch **at most once** — then proceed to Wave 3 and note any still-
+missing file as a gap. (Do NOT loop re-dispatching the same worker repeatedly — that spins
+the orchestrator without progress.)
 
 **Wave 3 — Integration:**
 - `principal-engineer` → `docs/review.md` (review every produced file for coherence; flag gaps)
