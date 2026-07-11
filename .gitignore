@@ -28,3 +28,4 @@ deploy/bc250/*.rpm
 # benchmark output (generated)
 tools/results/
 results/
+tools/bench_results/
