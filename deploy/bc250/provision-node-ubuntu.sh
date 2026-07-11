@@ -34,7 +34,7 @@ if systemctl is-active --quiet cyan-skillfish-governor-smu; then log "SMU govern
   sudo systemctl disable --now oberon-governor 2>/dev/null || true
   if ! systemctl list-unit-files 2>/dev/null | grep -q cyan-skillfish-governor-smu; then
     log "installing governor build deps"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl build-essential pkg-config >/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl build-essential pkg-config libdrm-dev >/dev/null
     sysver=$(rustc --version 2>/dev/null | grep -oP '1\.\K[0-9]+' || echo 0)
     if command -v cargo >/dev/null && [ "${sysver:-0}" -ge 87 ]; then log "system rust $(rustc --version)"
     elif [ -x "$HOME/.cargo/bin/cargo" ]; then source "$HOME/.cargo/env"
