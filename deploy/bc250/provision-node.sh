@@ -43,6 +43,13 @@ if command -v podman >/dev/null; then log "podman present"; else
   log "installing podman"; sudo dnf -y --setopt=install_weak_deps=False install podman
 fi
 
+# 1b. serving image (patched-Mesa llama.cpp) — pull from Docker Hub so no node-to-node
+# streaming is needed. Public repo; the Quadlet also has AutoUpdate=registry for refreshes.
+DNC_IMAGE="${DNC_IMAGE:-docker.io/machinez/llamacpp-bc250:latest}"
+if podman image exists "$DNC_IMAGE" 2>/dev/null; then log "image present ($DNC_IMAGE)"; else
+  log "pulling serving image $DNC_IMAGE"; podman pull "$DNC_IMAGE"
+fi
+
 # 2. SMU governor ---------------------------------------------------------------------
 if systemctl is-active --quiet cyan-skillfish-governor-smu; then
   log "SMU governor already active"

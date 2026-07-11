@@ -9,8 +9,9 @@
 #
 # Install: copy to ~/.config/containers/systemd/dnc-bc250-q36.container, enable linger,
 # then `systemctl --user daemon-reload && systemctl --user start dnc-bc250-q36` (or reboot).
-# Requires: image loaded (dnc/llamacpp-bc250:latest), model at ~/models/, GTT sized
-# (amdgpu.gttsize), governor + WoL from provision-node.sh.
+# Requires: image on Docker Hub (docker.io/machinez/llamacpp-bc250:latest — Quadlet AutoUpdate
+# pulls it on first start), model at ~/models/, GTT sized (amdgpu.gttsize), governor + WoL
+# from provision-node.sh.
 
 [Unit]
 Description=DnC BC-250 llama.cpp — Qwen3.6-35B-REAP (tier:s3)
@@ -18,7 +19,8 @@ After=network-online.target
 
 [Container]
 ContainerName=dnc-bc250-q36
-Image=dnc/llamacpp-bc250:latest
+Image=docker.io/machinez/llamacpp-bc250:latest
+AutoUpdate=registry
 Entrypoint=llama-server
 # device + rootless GPU access + SELinux relabel bypass (renderD128 is world-rw)
 PodmanArgs=--security-opt label=disable --device /dev/dri --group-add keep-groups

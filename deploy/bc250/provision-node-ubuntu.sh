@@ -4,6 +4,10 @@ log(){ echo "[prov-ubuntu] $*"; }
 if command -v podman >/dev/null; then log "podman present"; else
   log "installing podman (apt)"; sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman >/dev/null; fi
 podman --version
+# 1b. serving image from Docker Hub (patched-Mesa llama.cpp; public repo, no node streaming).
+DNC_IMAGE="${DNC_IMAGE:-docker.io/machinez/llamacpp-bc250:latest}"
+if podman image exists "$DNC_IMAGE" 2>/dev/null; then log "image present ($DNC_IMAGE)"; else
+  log "pulling serving image $DNC_IMAGE"; podman pull "$DNC_IMAGE"; fi
 # 2. GTT: live ttm write (this boot) + persist gttsize+pages_limit via GRUB (reboot activates amdgpu GTT domain)
 GTT_MB=14336; TTM_PAGES=$((GTT_MB*256))
 cur=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
