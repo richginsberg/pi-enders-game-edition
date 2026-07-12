@@ -93,6 +93,97 @@ def test_extra_args_appended():
     assert server_args(AMPERE_RIG, dep)[-1] == "--flash-attn"
 
 
+# -- inference-time GPU gate --------------------------------------------------------
+def test_inference_probe_emits_markers_and_hits_completion():
+    from fleetd.plays import inference_probe_command
+
+    cmd = inference_probe_command(llamacpp_dep("bc250-01"), "dnc-bc250-01-step35")
+    assert "docker logs dnc-bc250-01-step35" in cmd
+    assert "http://localhost:8080/completion" in cmd  # real inference, not /health
+    assert "DNC_OFFLOAD=cpu" in cmd and "DNC_OFFLOAD=gpu" in cmd
+    assert "predicted_per_second" in cmd  # throughput from llama.cpp's own timings
+
+
+def test_marker_takes_last_value():
+    from fleetd.plays import _marker
+
+    out = "DNC_OFFLOAD=unknown\nnoise\nDNC_OFFLOAD=gpu\nDNC_TPS=56.2\n"
+    assert _marker(out, "DNC_OFFLOAD") == "gpu"  # last wins
+    assert _marker(out, "DNC_TPS") == "56.2"
+    assert _marker(out, "DNC_MISSING") == ""
+
+
+async def _probe_report(monkeypatch, host, stdout):
+    """Run assert_gpu_inference against a canned probe stdout; return the step dict."""
+    from fleetd import plays
+
+    class _Proc:
+        def __init__(self, out):
+            self.stdout = out
+            self.exit_status = 0
+
+    async def fake_run(h, cmd):
+        return _Proc(stdout)
+
+    monkeypatch.setattr(plays, "run", fake_run)
+    report = plays.PlayReport(play="deploy", host_id=host.id)
+    await plays.assert_gpu_inference(host, llamacpp_dep(host.id), report)
+    return report
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_passes_on_gpu_bound_bc250(monkeypatch):
+    report = await _probe_report(monkeypatch, BC250, "DNC_OFFLOAD=gpu\nDNC_TPS=56.0\n")
+    assert report.ok is True
+    assert report.steps[-1]["name"] == "gpu_inference"
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_fails_on_cpu_fallback(monkeypatch):
+    # The Ubuntu-kernel trap: llvmpipe in the log -> CPU offload marker, must fail hard
+    # even if throughput happened to clear the floor.
+    report = await _probe_report(monkeypatch, BC250, "DNC_OFFLOAD=cpu\nDNC_TPS=44.0\n")
+    assert report.ok is False
+    assert "CPU FALLBACK" in report.steps[-1]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_fails_below_bc250_floor(monkeypatch):
+    report = await _probe_report(monkeypatch, BC250, "DNC_OFFLOAD=gpu\nDNC_TPS=12.0\n")
+    assert report.ok is False
+    assert "CPU-bound" in report.steps[-1]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_fails_when_completion_dead(monkeypatch):
+    report = await _probe_report(monkeypatch, BC250, "DNC_OFFLOAD=unknown\nDNC_TPS=0\n")
+    assert report.ok is False
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_no_tps_floor_off_bc250(monkeypatch):
+    # Non-BC-250: no known-good baseline, so a low t/s must NOT fail as long as it's on GPU.
+    report = await _probe_report(monkeypatch, AMPERE_RIG, "DNC_OFFLOAD=gpu\nDNC_TPS=9.0\n")
+    assert report.ok is True
+
+
+@pytest.mark.asyncio
+async def test_gpu_gate_skips_non_llamacpp(monkeypatch):
+    from fleetd import plays
+
+    called = False
+
+    async def fake_run(h, cmd):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(plays, "run", fake_run)
+    report = plays.PlayReport(play="deploy", host_id=V100.id)
+    await plays.assert_gpu_inference(V100, vllm_dep(V100.id), report)
+    assert called is False  # never probes a vLLM server
+    assert not report.steps
+
+
 @pytest.mark.asyncio
 async def test_deploy_refuses_adopted():
     from fleetd.plays import deploy

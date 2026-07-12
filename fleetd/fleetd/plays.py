@@ -33,6 +33,12 @@ IMAGES: dict[tuple[ServerKind, GpuArch], str] = {
 MODELS_DIR = "/opt/dnc/models"
 HEALTH_PATH = {ServerKind.VLLM: "/health", ServerKind.LLAMACPP: "/health"}
 
+# Throughput floor (tok/s) below which a BC-250 node is presumed CPU-bound rather than
+# serving on the GPU. A healthy BC-250 does ~56 tok/s; the Ubuntu-kernel CPU-fallback trap
+# measured ~12 tok/s. 30 sits with wide margin on both sides so a slow-but-GPU node still
+# passes and a fast-CPU fluke can't. Only enforced for BC-250 (other arches vary too widely).
+GPU_TPS_FLOOR_BC250 = 30.0
+
 
 def image_ref(host: Host, dep: Deployment) -> str:
     assert host.gpu_arch is not None
@@ -205,6 +211,93 @@ async def wait_healthy(host: Host, dep: Deployment, report: PlayReport, timeout_
     report.step("health", proc.exit_status == 0, "" if proc.exit_status == 0 else "health check timed out")
 
 
+def inference_probe_command(dep: Deployment, container: str) -> str:
+    """Render a remote snippet that fires ONE real completion and emits two marker lines.
+
+    A passing /health only proves the port answers — it does NOT prove inference runs on
+    the GPU. The classic trap (BC-250 on an Ubuntu kernel that never gave RADV a working
+    gfx1013 compute device): llama.cpp silently falls back to CPU, serves ~5x slower, yet
+    /health is green. So we assert the two fingerprints that separate GPU from CPU-bound:
+      DNC_OFFLOAD=<gpu|cpu|unknown>  from the server's OWN startup log (offloaded layers vs
+                                     an llvmpipe/CPU Vulkan device)
+      DNC_TPS=<float>               throughput straight from llama.cpp's timings (no client
+                                     math): predicted_per_second on a fixed tiny completion
+    Both are emitted on their own line for robust parsing; TPS defaults to 0 on any failure.
+    """
+    url = f"http://localhost:{dep.port}/completion"
+    body = '{"prompt":"Reply with the single word: ok.","n_predict":48,"stream":false,"cache_prompt":false}'
+    py = (
+        "import sys,json;"
+        "d=json.load(sys.stdin);"
+        "print('DNC_TPS=%.1f' % d.get('timings',{}).get('predicted_per_second',0))"
+    )
+    return (
+        # (1) offload signal from the container's own boot log — the same RADV llama.cpp uses.
+        f"log=$(docker logs {shlex.quote(container)} 2>&1 | "
+        f'grep -iE "llvmpipe|offloaded.*layers to GPU|Vulkan0|RADV|gfx1013|CPU_TYPE" | tail -40);'
+        f'if echo "$log" | grep -qiE "llvmpipe|PHYSICAL_DEVICE_TYPE_CPU"; then echo DNC_OFFLOAD=cpu;'
+        f'elif echo "$log" | grep -qiE "offloaded .*layers to GPU|Vulkan0|RADV|gfx1013"; then echo DNC_OFFLOAD=gpu;'
+        f"else echo DNC_OFFLOAD=unknown; fi;"
+        # (2) throughput from llama.cpp's own reported timings on a fixed tiny completion.
+        f"curl -sf {url} -H 'Content-Type: application/json' -d {shlex.quote(body)} "
+        f"| python3 -c {shlex.quote(py)} || echo DNC_TPS=0"
+    )
+
+
+def _marker(out: str, key: str) -> str:
+    """Last value of a `KEY=value` marker line (last wins if the probe echoed twice)."""
+    val = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            val = line.split("=", 1)[1]
+    return val
+
+
+async def assert_gpu_inference(
+    host: Host, dep: Deployment, report: PlayReport, *, min_tok_s: float | None = None
+) -> None:
+    """Post-health gate: fire one completion and fail if the node is serving CPU-bound.
+
+    llama.cpp-specific (the probe reads llama.cpp's /completion timings). The throughput
+    floor is enforced only for BC-250 (the arch with the CPU-fallback trap and a known-good
+    baseline); elsewhere we still fail on an explicit CPU/llvmpipe offload marker but don't
+    impose a t/s floor. Sets report.ok=False on failure so fleetd flags the node instead of
+    registering a dud that quietly serves ~5x slow.
+    """
+    if dep.server != ServerKind.LLAMACPP:
+        return  # probe reads llama.cpp timings; skip for other server kinds
+    floor = (
+        min_tok_s
+        if min_tok_s is not None
+        else (GPU_TPS_FLOOR_BC250 if host.gpu_arch == GpuArch.RDNA2_BC250 else 0.0)
+    )
+    proc = await run(host, inference_probe_command(dep, container_name(dep)))
+    out = proc.stdout or ""
+    offload = _marker(out, "DNC_OFFLOAD") or "unknown"
+    try:
+        tps = float(_marker(out, "DNC_TPS") or 0)
+    except ValueError:
+        tps = 0.0
+
+    if offload == "cpu":
+        report.step("gpu_inference", False,
+                    f"CPU FALLBACK: llama.cpp on CPU/llvmpipe (the Ubuntu-kernel trap), "
+                    f"{tps:.1f} tok/s — not fit to serve")
+        return
+    if tps <= 0:
+        report.step("gpu_inference", False,
+                    f"probe produced no throughput (offload={offload}); completion failed or "
+                    f"timings missing")
+        return
+    if floor and tps < floor:
+        report.step("gpu_inference", False,
+                    f"throughput {tps:.1f} < floor {floor:g} tok/s (offload={offload}) — node is "
+                    f"CPU-bound, not serving on the GPU")
+        return
+    report.step("gpu_inference", True, f"{tps:.1f} tok/s, offload={offload} (floor {floor:g})")
+
+
 async def deploy(host: Host, dep: Deployment, *, on_step: Callable[[dict], None] | None = None) -> PlayReport:
     """Deploy or upgrade an inference server container. Idempotent by container name."""
     report = PlayReport(play="deploy", host_id=host.id, on_step=on_step)
@@ -227,6 +320,12 @@ async def deploy(host: Host, dep: Deployment, *, on_step: Callable[[dict], None]
         return report
 
     await wait_healthy(host, dep, report)
+    if not report.ok:
+        return report  # never serving — the inference probe would just time out
+
+    # Health is green, but green only means the port answers. Assert the node actually
+    # serves on the GPU (not the CPU-fallback trap) before it's declared deploy-ok.
+    await assert_gpu_inference(host, dep, report)
     # TODO(M3, task #8/#10): on success, register with LiteLLM (fleetd litellm_sync)
     return report
 

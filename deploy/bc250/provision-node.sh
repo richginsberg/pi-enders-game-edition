@@ -199,8 +199,65 @@ if [ "${gtt_dom_mb:-0}" -lt 12000 ]; then
   NEED_REBOOT=1
 fi
 
+# 6. GPU-health gate (fail loudly on the CPU-fallback trap) ----------------------------
+# The Ubuntu-26.04 detour taught us the one failure mode that looks "up" but isn't: the
+# host kernel's amdgpu never gives the container's Vulkan/RADV a working gfx1013 COMPUTE
+# device, so llama.cpp silently falls back to CPU inference — ~5x slower, 560% CPU, ~140 W,
+# clock pinned. Health checks that only probe port 8080 pass anyway. So before declaring a
+# node good we assert the two OS-level fingerprints that cleanly separated good-Fedora from
+# bad-Ubuntu, and EXIT NON-ZERO so fleetd marks the node bad instead of registering a dud.
+#   (A) SMU alive        -> gpu_metrics is populated (Ubuntu's was empty)
+#   (B) Vulkan is on GPU -> RADV enumerates a real AMD (gfx1013) device, not llvmpipe/CPU
+# Full inference-time confirmation (offloaded N/33 layers, CPU% ~30-40 not 500%+, sclk->2000)
+# happens in the fleetd serving play once the model+unit exist; this gate catches the trap
+# at OS-provision time, before the node ever advertises itself.
+GATE_FAIL=0
+
+# (A) SMU / gpu_metrics — the direct "is the SMU answering?" probe. Empty or absent == the
+# Ubuntu signature. gpu_metrics is a small binary blob; a healthy node returns >0 bytes.
+gm=$(ls /sys/class/drm/card*/device/gpu_metrics 2>/dev/null | head -1)
+if [ -n "$gm" ] && [ "$(sudo stat -c %s "$gm" 2>/dev/null || echo 0)" -gt 0 ]; then
+  log "GATE A ok: gpu_metrics populated ($gm, $(sudo stat -c %s "$gm") bytes) — SMU is alive"
+else
+  log "GATE A FAIL: gpu_metrics empty/absent — SMU not answering (the Ubuntu-kernel signature)."
+  log "            This kernel does not properly drive the BC-250. Do NOT ship it; use Fedora."
+  GATE_FAIL=1
+fi
+
+# (B) Vulkan compute device — run the container's own tooling so we test the EXACT RADV that
+# llama.cpp will use, not the host Mesa. Prefer llama's device list (mirrors serving init);
+# fall back to vulkaninfo. PASS requires an AMD/RADV/gfx1013 GPU line and NO CPU/llvmpipe
+# fallback. --device /dev/dri + keep-groups so rootless podman can reach the render node.
+podman_gpu() { podman run --rm --device /dev/dri --group-add keep-groups "$DNC_IMAGE" "$@" 2>&1; }
+vk=""
+if vk=$(podman_gpu llama-server --list-devices 2>&1) && echo "$vk" | grep -qiE 'vulkan|radv|gfx1013'; then
+  :
+elif vk=$(podman_gpu vulkaninfo --summary 2>&1) && echo "$vk" | grep -qi 'deviceType'; then
+  :
+else
+  vk="${vk:-<no vulkan tooling in image>}"
+fi
+if echo "$vk" | grep -qiE 'radv|gfx1013|AMD Radeon' && ! echo "$vk" | grep -qiE 'llvmpipe|PHYSICAL_DEVICE_TYPE_CPU'; then
+  log "GATE B ok: RADV enumerates a real AMD GPU (Vulkan compute path is live, not CPU fallback)"
+elif echo "$vk" | grep -qiE 'llvmpipe|PHYSICAL_DEVICE_TYPE_CPU'; then
+  log "GATE B FAIL: Vulkan fell back to CPU/llvmpipe — llama.cpp would run on the CPU (~5x slow)."
+  log "            Kernel/driver isn't exposing gfx1013 for compute. Do NOT ship it."
+  GATE_FAIL=1
+else
+  # Tooling absent or inconclusive — warn but don't hard-fail on B alone (gate A already
+  # caught the real regression). Note it so the operator can eyeball serving init.
+  log "GATE B WARN: could not confirm the Vulkan device from the image (output below); verify"
+  log "            'offloaded N/33 layers to GPU' in the serving log once the unit is up."
+  log "            vk-probe: $(echo "$vk" | tr '\n' ' ' | cut -c1-200)"
+fi
+
 echo "[provision] OS provisioning complete. WoL MAC: $(cat /sys/class/net/${NIC:-none}/address 2>/dev/null || echo unknown)"
 echo "[provision] GTT ceiling now: $(( $(cat /sys/module/ttm/parameters/pages_limit) / 256 )) MB (need >=12 GB for 262k)"
 if [ "$NEED_REBOOT" = "1" ]; then
   echo "[provision] *** REBOOT REQUIRED *** (GTT cmdline set but live write unavailable)"
+fi
+if [ "$GATE_FAIL" = "1" ]; then
+  echo "[provision] *** GPU-HEALTH GATE FAILED *** node would run inference on the CPU — NOT fit to serve."
+  echo "[provision] See GATE A/B logs above. This is the Ubuntu-kernel trap; a good Fedora kernel passes."
+  exit 1
 fi
