@@ -57,6 +57,10 @@ else
   log "disabling oberon governor (if present)"
   sudo systemctl disable --now oberon-governor 2>/dev/null || true
   if ! systemctl list-unit-files 2>/dev/null | grep -q cyan-skillfish-governor-smu; then
+    # Build deps: minimal Fedora Server (e.g. F43) lacks git + a C toolchain, and the
+    # governor links libdrm/libdrm_amdgpu. Older F40 nodes had these implicitly.
+    log "installing governor build deps"
+    sudo dnf install -y -q gcc git make libdrm-devel pkgconf-pkg-config
     log "building SMU governor from source"
     # The governor's edition-2024 / zbus deps need rustc >= 1.87. Prefer the system
     # toolchain if it's new enough (varies per node's dnf state); else an existing
