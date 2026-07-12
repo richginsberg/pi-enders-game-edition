@@ -26,11 +26,20 @@ else
   sudo update-grub >/dev/null 2>&1 || sudo update-grub
   log "GRUB updated with: $ARGS (REBOOT needed to size amdgpu GTT domain)"
 fi
-# 2b. SMU power governor (cyan-skillfish-governor-smu) — untuned BC-250 pulls ~110W; the
-# inference-tuned SMU governor brings idle down and holds clock under load. Built from source
-# (rust). cargo build takes several minutes.
+# 2b. SMU power governor (cyan-skillfish-governor-smu). GUARD: the governor needs the SMU
+# gpu_metrics table to read load and drive clocks. On kernels that regressed BC-250 SMU
+# support (observed: Ubuntu 26.04 / kernel 7.0 — empty gpu_metrics, DPM force-level not
+# writable) the governor CAN'T ramp and actively pins the GPU LOW (~1000MHz -> ~5x slower
+# inference than kernel 6.14). Skip it there; native DPM (~1500MHz) is the better of bad
+# options. Only install the governor if the SMU metrics table is actually populated.
 GOV_REPO="https://github.com/filippor/cyan-skillfish-governor.git"
-if systemctl is-active --quiet cyan-skillfish-governor-smu; then log "SMU governor active"; else
+GPU_DEV=$(readlink -f /sys/class/drm/renderD128/device 2>/dev/null)
+METRICS_BYTES=$(sudo cat "$GPU_DEV/gpu_metrics" 2>/dev/null | wc -c)
+if [ "${METRICS_BYTES:-0}" -lt 32 ]; then
+  log "WARNING: SMU gpu_metrics empty ($METRICS_BYTES bytes) — this kernel's BC-250 power mgmt is broken."
+  log "         Skipping SMU governor (it would pin the GPU low). Inference will be SLOW until the"
+  log "         kernel has working Cyan Skillfish SMU support (kernel 6.14 works; 7.0 regressed)."
+elif systemctl is-active --quiet cyan-skillfish-governor-smu; then log "SMU governor active"; else
   sudo systemctl disable --now oberon-governor 2>/dev/null || true
   if ! systemctl list-unit-files 2>/dev/null | grep -q cyan-skillfish-governor-smu; then
     log "installing governor build deps"
