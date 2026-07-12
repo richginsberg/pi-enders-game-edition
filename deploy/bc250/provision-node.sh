@@ -147,6 +147,15 @@ else
   log "enabling linger for $USER"; sudo loginctl enable-linger "$USER"
 fi
 
+# 4b. firewall: Fedora Server enables firewalld by default, which blocks the container's
+# published port 8080 from other hosts (the gateway + benchmarks) — localhost still works,
+# so it looks "up" locally but unreachable from the fleet. Open it. (Older F40 nodes had
+# this handled already.) No-op if firewalld isn't running.
+if systemctl is-active --quiet firewalld 2>/dev/null; then
+  sudo firewall-cmd --add-port=8080/tcp --permanent >/dev/null 2>&1 && sudo firewall-cmd --reload >/dev/null 2>&1
+  log "opened firewalld tcp/8080 (llama-server)"
+fi
+
 # 5. GTT size (CRITICAL for the dynamic-VRAM split) -----------------------------------
 # With 512 MB VRAM, the model lives in GTT (GART aperture into system RAM). amdgpu derives
 # GTT size from BIOS memory config — some BIOSes give only ~1/2 RAM (e.g. 7.6 GB), too
