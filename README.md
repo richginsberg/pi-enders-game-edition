@@ -89,6 +89,39 @@ guide, including the dynamic-VRAM BIOS split and the `--jinja`/generation-cap go
 reasoning models: see [`deploy/bc250/README.md`](deploy/bc250/README.md). Model-selection
 and VRAM math for the S2/S3 tiers: [`docs/model-selection-2026.md`](docs/model-selection-2026.md).
 
+## Fleet power & node registry
+
+The fleet is mostly powered off; nodes are woken on demand and put back to sleep. All of
+this is driven from Pi via `/fleet-power` (fleetd does the work; the extension streams
+progress over SSE), with `tools/fleetpower.py` as a standalone CLI fallback.
+
+```
+/fleet-power s3 on            wake tier S3, watch each node reach *serving* (live ETA)
+/fleet-power s3 off           graceful shutdown (confirms; skips never_sleep nodes)
+/fleet-power all on | .106 on | 1,2,3 on
+/fleet-power list             the node registry
+/fleet-power register bc25007 192.168.1.124 <mac> s3 chassis=c1 [never_sleep] [port=N]
+/fleet-power deregister bc25007
+/fleet-power litellm-sync     regenerate the gateway's S3 entries from the registry + restart
+```
+
+- **Real serving proof, not just "up":** each node walks a state machine —
+  `waking → booting → loading → serving` (a real `/health` 200, not a port ping) — with
+  elapsed + ETA per node. OFF walks `stopping → offline`.
+- **One node registry, three consumers.** `~/dnc/fleet-nodes.yaml` (name → ip/mac/tier +
+  `chassis`/`never_sleep`/`port`) is the source of truth. fleetd manages it via
+  `register`/`deregister`; `fleetpower.py --sync` pulls it down to the local fallback; and
+  `litellm-sync` regenerates the **gateway's** per-node routing entries from it (marker-fenced
+  so hand-managed `tier:s0`/`tier:s1` entries stay untouched). A rebuilt node's new DHCP IP
+  follows everywhere from one `register … overwrite` — the MAC (the WoL identity) is stable.
+- **Chassis-aware ordering.** The per-chassis fan-controller node (`never_sleep`, same
+  `chassis` id as its mates) is **first-to-wake** (mates gate until it's reachable — they're
+  `blocked` if it never comes up) and **last-to-sleep** on a forced OFF, so boards never run
+  without cooling. Nodes with no `chassis` (single/multi-GPU S1/S2 boxes) power in parallel.
+
+The control-plane services (`dnc-litellm`, `dnc-fleetd`, `dnc-context`) run as systemd units
+that auto-start on boot and self-heal on crash — see [`deploy/README.md`](deploy/README.md).
+
 ## Engineering personas (M5)
 
 We adopt [`@chankov/agent-skills`](https://pi.dev/packages/@chankov/agent-skills)
