@@ -10,7 +10,7 @@ export async function fleetdGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function fleetdSend<T>(method: "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+export async function fleetdSend<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${FLEETD_BASE_URL}${path}`, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },

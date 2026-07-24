@@ -3,6 +3,90 @@ import pytest
 from fleetd import power
 
 
+# -- registry: register / de-register (line-level YAML editing) ----------------------
+SAMPLE_FILE = """\
+# fleet node inventory
+broadcast: 192.168.1.255
+ssh_user: svc
+nodes:
+  bc25001: { ip: 192.168.1.123, mac: "aa:bb:cc:dd:ee:01", tier: s3 }  # first node
+  bc25006: { ip: 192.168.1.118, mac: "aa:bb:cc:dd:ee:06", tier: s3, never_sleep: true }
+"""
+
+
+def _write(tmp_path, text=SAMPLE_FILE):
+    p = tmp_path / "fleet-nodes.yaml"
+    p.write_text(text)
+    return str(p)
+
+
+def test_normalize_mac_and_validate_ip():
+    assert power.normalize_mac("A8-A1-59-B2-54-F5") == "a8:a1:59:b2:54:f5"
+    assert power.validate_ip("192.168.1.170") == "192.168.1.170"
+    with pytest.raises(ValueError):
+        power.normalize_mac("nope")
+    with pytest.raises(ValueError):
+        power.validate_ip("192.168.1.999")
+
+
+def test_register_appends_and_preserves_comments(tmp_path):
+    import yaml
+    path = _write(tmp_path)
+    entry = power.register_node(path, "bc25020", "192.168.1.140", "aa:bb:cc:dd:ee:20", "s3")
+    assert entry["mac"] == "aa:bb:cc:dd:ee:20"
+    text = open(path).read()
+    assert "# first node" in text and "broadcast: 192.168.1.255" in text  # comments/layout kept
+    cfg = yaml.safe_load(text)
+    assert cfg["nodes"]["bc25020"]["ip"] == "192.168.1.140"
+    assert len(cfg["nodes"]) == 3
+
+
+def test_register_rejects_duplicate_without_overwrite(tmp_path):
+    path = _write(tmp_path)
+    with pytest.raises(ValueError, match="already registered"):
+        power.register_node(path, "bc25001", "192.168.1.9", "aa:bb:cc:dd:ee:99", "s3")
+
+
+def test_register_overwrite_replaces_in_place(tmp_path):
+    import yaml
+    path = _write(tmp_path)
+    power.register_node(path, "bc25001", "192.168.1.55", "aa:bb:cc:dd:ee:55", "s2", overwrite=True)
+    cfg = yaml.safe_load(open(path).read())
+    assert cfg["nodes"]["bc25001"]["ip"] == "192.168.1.55" and cfg["nodes"]["bc25001"]["tier"] == "s2"
+    assert len(cfg["nodes"]) == 2  # replaced, not duplicated
+
+
+def test_register_rejects_bad_tier_and_name(tmp_path):
+    path = _write(tmp_path)
+    with pytest.raises(ValueError, match="tier"):
+        power.register_node(path, "bc25020", "192.168.1.1", "aa:bb:cc:dd:ee:20", "s9")
+    with pytest.raises(ValueError, match="name"):
+        power.register_node(path, "bad name!", "192.168.1.1", "aa:bb:cc:dd:ee:20", "s3")
+
+
+def test_register_creates_file_when_missing(tmp_path):
+    import yaml
+    path = str(tmp_path / "sub" / "fleet-nodes.yaml")
+    power.register_node(path, "bc25001", "192.168.1.1", "aa:bb:cc:dd:ee:01", "s3", never_sleep=True)
+    cfg = yaml.safe_load(open(path).read())
+    assert cfg["nodes"]["bc25001"]["never_sleep"] is True
+
+
+def test_deregister_removes_line_and_keeps_others(tmp_path):
+    import yaml
+    path = _write(tmp_path)
+    removed = power.deregister_node(path, "bc25001")
+    assert removed["ip"] == "192.168.1.123"
+    cfg = yaml.safe_load(open(path).read())
+    assert "bc25001" not in cfg["nodes"] and "bc25006" in cfg["nodes"]
+
+
+def test_deregister_unknown_raises(tmp_path):
+    path = _write(tmp_path)
+    with pytest.raises(ValueError, match="not registered"):
+        power.deregister_node(path, "bc25099")
+
+
 CFG = {
     "_path": "/x/fleet-nodes.yaml",
     "broadcast": "192.168.1.255",

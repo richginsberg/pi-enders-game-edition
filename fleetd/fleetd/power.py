@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import socket
 import time
 from collections.abc import AsyncIterator, Callable
@@ -109,6 +110,144 @@ def partition_never_sleep(
     act = [(n, d) for n, d in targets if not d.get("never_sleep")]
     skip = [(n, d) for n, d in targets if d.get("never_sleep")]
     return act, skip
+
+
+# --- registry: register / de-register a node in the node file ----------------------
+# The node file is the source of truth for /fleet-power (name -> ip/mac/tier + flags,
+# plus top-level broadcast/ssh_user). These helpers edit it safely so nobody hand-edits
+# YAML: validate the fields, refuse silent duplicates, and do a LINE-level upsert (the
+# file's one-line-per-node flow style) so comments and layout survive. Every write is
+# validated by re-parsing and applied atomically (temp + os.replace).
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+TIERS_VALID = {"s0", "s1", "s2", "s3"}
+DEFAULT_NODE_FILE = os.path.expanduser("~/dnc/fleet-nodes.yaml")
+
+
+def resolve_config_path(create: bool = False) -> str:
+    """First existing node file; with create=True, fall back to the default path (which
+    register_node will create) instead of raising."""
+    for p in CONFIG_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    if create:
+        return os.environ.get("DNC_NODES") or DEFAULT_NODE_FILE
+    tried = ", ".join(c for c in CONFIG_CANDIDATES if c)
+    raise FileNotFoundError(f"no node file found (tried: {tried}) — set $DNC_NODES")
+
+
+def normalize_mac(mac: str) -> str:
+    hexmac = mac.replace(":", "").replace("-", "").strip().lower()
+    if len(hexmac) != 12 or any(c not in "0123456789abcdef" for c in hexmac):
+        raise ValueError(f"bad MAC: {mac!r} (want 6 hex octets)")
+    return ":".join(hexmac[i:i + 2] for i in range(0, 12, 2))
+
+
+def validate_ip(ip: str) -> str:
+    ip = ip.strip()
+    octs = ip.split(".")
+    if len(octs) != 4 or any(not o.isdigit() or not 0 <= int(o) <= 255 for o in octs):
+        raise ValueError(f"bad IP: {ip!r}")
+    return ip
+
+
+def _node_entry(ip: str, mac: str, tier: str, never_sleep: bool, port: int | None) -> dict:
+    e: dict = {"ip": ip, "mac": mac, "tier": tier}
+    if port:
+        e["port"] = int(port)
+    if never_sleep:
+        e["never_sleep"] = True
+    return e
+
+
+def render_node_line(name: str, e: dict) -> str:
+    """One-line flow entry matching the node file's convention."""
+    parts = [f"ip: {e['ip']}", f'mac: "{e["mac"]}"', f"tier: {e['tier']}"]
+    if e.get("port"):
+        parts.append(f"port: {e['port']}")
+    if e.get("never_sleep"):
+        parts.append("never_sleep: true")
+    return f"  {name}: {{ {', '.join(parts)} }}"
+
+
+def _atomic_write(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _upsert_line(text: str, name: str, line: str) -> str:
+    """Replace the existing `<name>:` line under `nodes:`, or insert it after the last
+    node line. Creates a `nodes:` block if the file has none."""
+    lines = text.splitlines()
+    hdr = next((i for i, l in enumerate(lines) if re.match(r"^nodes\s*:\s*$", l)), -1)
+    if hdr == -1:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += ["nodes:", line]
+        return "\n".join(lines) + "\n"
+    pat = re.compile(rf"^\s+{re.escape(name)}\s*:")
+    insert_at, i = hdr + 1, hdr + 1
+    while i < len(lines):
+        l = lines[i]
+        if l.strip() == "" or l.lstrip().startswith("#") or l[:1] in (" ", "\t"):
+            if pat.match(l):
+                lines[i] = line
+                return "\n".join(lines) + "\n"
+            insert_at = i + 1
+            i += 1
+        else:
+            break  # dedented line = end of the nodes block
+    lines.insert(insert_at, line)
+    return "\n".join(lines) + "\n"
+
+
+def register_node(
+    path: str, name: str, ip: str, mac: str, tier: str,
+    *, never_sleep: bool = False, port: int | None = None, overwrite: bool = False,
+) -> dict:
+    """Validate + add (or replace) a node in the node file. Raises ValueError on bad
+    input or on an existing name without overwrite."""
+    if not NAME_RE.match(name or ""):
+        raise ValueError(f"bad node name: {name!r} (letters/digits/-/_ only)")
+    if tier not in TIERS_VALID:
+        raise ValueError(f"bad tier: {tier!r} (want one of {sorted(TIERS_VALID)})")
+    ip, mac = validate_ip(ip), normalize_mac(mac)
+
+    text = ""
+    if os.path.exists(path):
+        with open(path) as f:
+            text = f.read()
+        existing = (yaml.safe_load(text) or {}).get("nodes") or {}
+        if name in existing and not overwrite:
+            raise ValueError(f"{name} already registered (ip={existing[name].get('ip')}); pass overwrite to replace")
+    else:
+        text = ("# fleetpower node inventory (local, gitignored). Set broadcast/ssh_user "
+                "for OFF/WoL.\n# broadcast: 192.168.1.255\n# ssh_user: youruser\nnodes:\n")
+
+    entry = _node_entry(ip, mac, tier, never_sleep, port)
+    new_text = _upsert_line(text, name, render_node_line(name, entry))
+    if name not in ((yaml.safe_load(new_text) or {}).get("nodes") or {}):
+        raise ValueError("internal error: node file edit did not register the node")
+    _atomic_write(path, new_text)
+    return {"name": name, **entry}
+
+
+def deregister_node(path: str, name: str) -> dict:
+    """Remove a node's line from the node file. Raises ValueError if it isn't registered."""
+    with open(path) as f:
+        text = f.read()
+    existing = (yaml.safe_load(text) or {}).get("nodes") or {}
+    if name not in existing:
+        raise ValueError(f"{name} is not registered")
+    removed = existing[name]
+    pat = re.compile(rf"^\s+{re.escape(name)}\s*:")
+    new_text = "\n".join(l for l in text.splitlines() if not pat.match(l)) + "\n"
+    if name in ((yaml.safe_load(new_text) or {}).get("nodes") or {}):
+        raise ValueError("internal error: node file edit did not de-register the node")
+    _atomic_write(path, new_text)
+    return {"name": name, **removed}
 
 
 # --- state machine (pure) ----------------------------------------------------------

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from .db import Db
 from .models import Deployment, Host, Management, TaskRecord
@@ -231,6 +232,57 @@ def upsert_task(task_id: str, task: TaskRecord) -> TaskRecord:
         task.started_at = task.updated_at
     db.upsert_task(task)
     return task
+
+
+# -- fleet node registry: register / de-register / list the node file ---------------
+class NodeReg(BaseModel):
+    name: str
+    ip: str
+    mac: str
+    tier: str
+    never_sleep: bool = False
+    port: int | None = None
+    overwrite: bool = False
+
+
+@app.get("/nodes")
+def list_nodes() -> list[dict]:
+    """Nodes in the fleet node file (the /fleet-power inventory). Empty if no file yet."""
+    from . import power
+
+    try:
+        cfg = power.load_nodes()
+    except FileNotFoundError:
+        return []
+    return [{"name": n, **d} for n, d in sorted((cfg.get("nodes") or {}).items())]
+
+
+@app.post("/nodes")
+def register_node(reg: NodeReg) -> dict:
+    """Add or replace a node (name/ip/mac/tier + flags) in the node file, with validation."""
+    from . import power
+
+    try:
+        path = power.resolve_config_path(create=True)
+        return power.register_node(
+            path, reg.name, reg.ip, reg.mac, reg.tier,
+            never_sleep=reg.never_sleep, port=reg.port, overwrite=reg.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.delete("/nodes/{name}")
+def deregister_node(name: str) -> dict:
+    """Remove a node from the node file. Returns the removed entry."""
+    from . import power
+
+    try:
+        return power.deregister_node(power.resolve_config_path(), name)
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
 
 
 # -- fleet power: wake/shutdown a tier (or nodes/ips) and stream progress -----------

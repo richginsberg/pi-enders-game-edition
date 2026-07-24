@@ -11,8 +11,8 @@
  *   /fleet-power .106 off     192.168.1.106
  *   /fleet-power s3 off force  also power off never_sleep nodes
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fleetdGet, fleetdStream } from "./config.js";
+import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fleetdGet, fleetdSend, fleetdStream } from "./config.js";
 
 type Phase =
   | "waking" | "booting" | "loading" | "serving"
@@ -93,10 +93,81 @@ function nodeLine(e: NodeEvent): string {
   return `  ${ICON[e.phase]} ${where} ${e.phase.padEnd(8)} ${timing}`;
 }
 
+interface NodeRow {
+  name: string;
+  ip: string | null;
+  tier: string | null;
+  never_sleep?: boolean;
+  port?: number;
+}
+
+async function showNodes(ui: ExtensionUIContext): Promise<void> {
+  const nodes = await fleetdGet<NodeRow[]>("/nodes");
+  const lines = nodes.length
+    ? nodes.map((n) => `  ${n.name.padEnd(9)} ${(n.ip ?? "").padEnd(15)} ${n.tier}${n.never_sleep ? "  (never_sleep)" : ""}`)
+    : ["  (no nodes registered yet — /fleet-power register …)"];
+  ui.setWidget("dnc-power", [`Fleet nodes (${nodes.length})`, ...lines]);
+}
+
+/** /fleet-power register <name> <ip> <mac> <tier> [never_sleep] [port=N] — prompts for any missing field. */
+async function registerNode(toks: string[], ui: ExtensionUIContext): Promise<void> {
+  let [name, ip, mac, tier] = toks;
+  const never_sleep = toks.includes("never_sleep") || toks.includes("never-sleep");
+  const portTok = toks.find((t) => t.startsWith("port="));
+  const port = portTok ? Number(portTok.slice(5)) : undefined;
+
+  name ||= (await ui.input("Node name", "bc25020")) ?? "";
+  if (!name) return;
+  ip ||= (await ui.input(`IP for ${name}`, "192.168.1.")) ?? "";
+  if (!ip) return;
+  mac ||= (await ui.input(`WoL MAC for ${name} (ONBOARD NIC)`, "aa:bb:cc:dd:ee:ff")) ?? "";
+  if (!mac) return;
+  tier ||= (await ui.select(`Tier for ${name}`, ["s3", "s2", "s1", "s0"])) ?? "";
+  if (!tier) return;
+
+  const body: Record<string, unknown> = { name, ip, mac, tier, never_sleep };
+  if (port) body.port = port;
+  try {
+    await fleetdSend<NodeRow>("POST", "/nodes", body);
+    ui.notify(`registered ${name} (${ip}, ${tier})`, "info");
+  } catch (err) {
+    const msg = String(err);
+    if (msg.includes("already registered") &&
+        (await ui.confirm(`${name} already exists`, "Replace its entry with these values?"))) {
+      await fleetdSend<NodeRow>("POST", "/nodes", { ...body, overwrite: true });
+      ui.notify(`replaced ${name} (${ip}, ${tier})`, "info");
+    } else {
+      ui.notify(`register failed: ${err}`, "error");
+      return;
+    }
+  }
+  await showNodes(ui);
+}
+
+/** /fleet-power deregister <name> — confirms, then removes it from the node file. */
+async function deregisterNode(toks: string[], ui: ExtensionUIContext): Promise<void> {
+  const name = toks[0] || (await ui.input("Node to de-register", "bc25020")) || "";
+  if (!name) return;
+  if (!(await ui.confirm(`De-register ${name}?`, "Removes it from the fleet node file (does not power it off)."))) return;
+  try {
+    await fleetdSend<NodeRow>("DELETE", `/nodes/${encodeURIComponent(name)}`);
+    ui.notify(`de-registered ${name}`, "info");
+    await showNodes(ui);
+  } catch (err) {
+    ui.notify(`de-register failed: ${err}`, "error");
+  }
+}
+
 export function registerFleetPowerCommand(pi: ExtensionAPI): void {
   pi.registerCommand("fleet-power", {
-    description: "Power fleet tiers/nodes on/off and watch them reach serving (or offline)",
+    description: "Power fleet tiers/nodes on/off (watch them reach serving); register/deregister/list nodes",
     handler: async (args, ctx) => {
+      const toks = String(args ?? "").trim().split(/\s+/).filter(Boolean);
+      const sub = toks[0]?.toLowerCase();
+      if (sub === "register" || sub === "add") return registerNode(toks.slice(1), ctx.ui);
+      if (sub === "deregister" || sub === "remove") return deregisterNode(toks.slice(1), ctx.ui);
+      if (sub === "list" || sub === "ls") return showNodes(ctx.ui);
+
       const parsed = parseArgs(String(args ?? ""));
       if ("error" in parsed) {
         ctx.ui.notify(parsed.error, "error");
