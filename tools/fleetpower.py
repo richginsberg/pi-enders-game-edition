@@ -189,7 +189,9 @@ def main() -> int:
     ap.add_argument("--state", choices=["on", "off"], help="power state (required unless --sync)")
     ap.add_argument("--sync", action="store_true",
                     help="pull node inventory from fleetd /nodes and OVERWRITE the local file, then exit")
-    ap.add_argument("--fleetd", help="fleetd base URL for --sync (default $DNC_FLEETD_URL or http://localhost:7431)")
+    ap.add_argument("--sync-litellm", action="store_true",
+                    help="tell fleetd to regenerate LiteLLM S3 entries from the registry + restart the gateway")
+    ap.add_argument("--fleetd", help="fleetd base URL for --sync/--sync-litellm (default $DNC_FLEETD_URL or http://localhost:7431)")
     ap.add_argument("--tier", help="comma tiers, e.g. s3 or s1,s3")
     ap.add_argument("--nodes", help="comma names/numbers, e.g. 1,2,bc25005")
     ap.add_argument("--ips", help="comma IPs, e.g. .106,.123")
@@ -203,6 +205,16 @@ def main() -> int:
 
     if args.sync:
         return sync_from_fleetd(args)
+    if args.sync_litellm:
+        base = _fleetd_base(args)
+        try:
+            req = urllib.request.Request(base.rstrip("/") + "/litellm/sync", data=b"", method="POST")
+            r = json.load(urllib.request.urlopen(req, timeout=90))
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"[fleetpower] litellm-sync failed via {base}: {type(e).__name__}: {e}")
+        print(f"[fleetpower] litellm synced: {r['entries']} entries for {len(r['s3_nodes'])} node(s); "
+              f"gateway restarted={r['restarted']}")
+        return 0
     if not args.state:
         ap.error("--state is required (on/off) unless you pass --sync")
     if not (args.all or args.tier or args.nodes or args.ips):

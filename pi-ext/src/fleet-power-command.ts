@@ -163,6 +163,36 @@ async function deregisterNode(toks: string[], ui: ExtensionUIContext): Promise<v
   }
 }
 
+interface LitellmSyncResult {
+  entries: number;
+  s3_nodes: string[];
+  restarted: boolean;
+  backup: string;
+  config: string;
+}
+
+/** /fleet-power litellm-sync — regenerate the gateway's S3 entries from the registry + restart. */
+async function litellmSync(ui: ExtensionUIContext): Promise<void> {
+  const ok = await ui.confirm(
+    "Sync LiteLLM from the node registry?",
+    "Regenerates the gateway's tier:s3/tier:auto node entries and restarts the gateway (a few-second blip).",
+  );
+  if (!ok) return;
+  ui.setWidget("dnc-power", ["Syncing LiteLLM from the node registry…"]);
+  try {
+    const r = await fleetdSend<LitellmSyncResult>("POST", "/litellm/sync");
+    ui.setWidget("dnc-power", [
+      `LiteLLM synced: ${r.entries} entries for ${r.s3_nodes.length} S3 node(s)`,
+      `  nodes: ${r.s3_nodes.join(", ")}`,
+      `  gateway restarted: ${r.restarted ? "yes" : "no"}`,
+      `  backup: ${r.backup}`,
+    ]);
+    ui.notify(`LiteLLM synced (${r.entries} entries)${r.restarted ? " + gateway restarted" : ""}`, "info");
+  } catch (err) {
+    ui.notify(`litellm-sync failed: ${err}`, "error");
+  }
+}
+
 export function registerFleetPowerCommand(pi: ExtensionAPI): void {
   pi.registerCommand("fleet-power", {
     description: "Power fleet tiers/nodes on/off (watch them reach serving); register/deregister/list nodes",
@@ -172,6 +202,7 @@ export function registerFleetPowerCommand(pi: ExtensionAPI): void {
       if (sub === "register" || sub === "add") return registerNode(toks.slice(1), ctx.ui);
       if (sub === "deregister" || sub === "remove") return deregisterNode(toks.slice(1), ctx.ui);
       if (sub === "list" || sub === "ls") return showNodes(ctx.ui);
+      if (sub === "litellm-sync" || sub === "sync-litellm") return litellmSync(ctx.ui);
 
       const parsed = parseArgs(String(args ?? ""));
       if ("error" in parsed) {

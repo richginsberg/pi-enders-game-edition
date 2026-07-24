@@ -286,6 +286,26 @@ def deregister_node(name: str) -> dict:
         raise HTTPException(404, str(e)) from e
 
 
+@app.post("/litellm/sync")
+def litellm_sync_endpoint(restart: bool = True) -> dict:
+    """Regenerate the LiteLLM S3 node entries from the node registry (marker-fenced;
+    hand-managed s0/s1 entries untouched), back up the config, and restart the gateway
+    so it reloads. Explicit action — see `/fleet-power litellm-sync`."""
+    from . import litellm_sync, power
+
+    try:
+        cfg = power.load_nodes()
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e)) from e
+    config_path = os.environ.get("DNC_LITELLM_CONFIG", os.path.expanduser("~/dnc/litellm-config.yaml"))
+    if not os.path.exists(config_path):
+        raise HTTPException(503, f"litellm config not found: {config_path} (set $DNC_LITELLM_CONFIG)")
+    try:
+        return litellm_sync.sync(config_path, cfg, restart=restart)
+    except Exception as e:  # rewrite validation / restart failure
+        raise HTTPException(500, f"litellm sync failed: {e}") from e
+
+
 # -- fleet power: wake/shutdown a tier (or nodes/ips) and stream progress -----------
 @app.get("/power/plan")
 def power_plan(
