@@ -11,6 +11,8 @@ from one command using an alias file (name -> ip/mac/tier).
   fleetpower.py --ips .106,.123 --state off   # .106 == 192.168.1.106
   fleetpower.py --tier s3 --state off --dry-run
   fleetpower.py --all --state on
+  fleetpower.py --sync                        # pull node list from fleetd, overwrite local file
+  fleetpower.py --sync --fleetd http://cp:7431
 
 Selectors combine (union). Config file, first found: $DNC_NODES,
 ~/dnc/fleet-nodes.yaml, ./fleet-nodes.yaml — override with --config.
@@ -23,10 +25,12 @@ unless you pass --force.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
 import sys
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -88,6 +92,72 @@ def _split(v: str | None) -> list[str]:
     return [x for x in (v or "").replace(" ", "").split(",") if x]
 
 
+# --- --sync: pull the canonical inventory from fleetd and overwrite the local file ---
+# fleetd (on the control-plane box) is the source of truth; this file is a standalone
+# fallback. --sync fetches fleetd's /nodes and rewrites the local yaml so the two agree.
+def _fleetd_base(args) -> str:
+    return args.fleetd or os.environ.get("DNC_FLEETD_URL") or "http://localhost:7431"
+
+
+def _pull_nodes(base: str) -> list[dict]:
+    with urllib.request.urlopen(base.rstrip("/") + "/nodes", timeout=10) as r:
+        data = json.load(r)
+    if not isinstance(data, list):
+        raise ValueError("unexpected /nodes response (not a list)")
+    return data
+
+
+def _render_node_line(name: str, d: dict) -> str:
+    parts = [f"ip: {d['ip']}", f'mac: "{d.get("mac", "")}"', f"tier: {d.get('tier')}"]
+    if d.get("port"):
+        parts.append(f"port: {d['port']}")
+    if d.get("never_sleep"):
+        parts.append("never_sleep: true")
+    return f"  {name}: {{ {', '.join(parts)} }}"
+
+
+def _resolve_write_path(args) -> str:
+    if args.config:
+        return os.path.expanduser(args.config)
+    for p in CONFIG_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    return os.path.expanduser("~/dnc/fleet-nodes.yaml")
+
+
+def sync_from_fleetd(args) -> int:
+    base = _fleetd_base(args)
+    path = _resolve_write_path(args)
+    existing: dict = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            existing = yaml.safe_load(f) or {}
+    try:
+        nodes = _pull_nodes(base)
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"[fleetpower] sync failed from {base}/nodes: {type(e).__name__}: {e}")
+
+    # Preserve the local top-level WoL/ssh settings (fleetd's /nodes only returns nodes).
+    out = [f"# fleet node inventory — synced from {base}/nodes (local edits overwritten)"]
+    if existing.get("broadcast"):
+        out.append(f"broadcast: {existing['broadcast']}")
+    if existing.get("ssh_user"):
+        out.append(f"ssh_user: {existing['ssh_user']}")
+    out.append("nodes:")
+    out += [_render_node_line(n["name"], n) for n in sorted(nodes, key=lambda x: x["name"])]
+    text = "\n".join(out) + "\n"
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    print(f"[fleetpower] synced {len(nodes)} node(s) from {base} -> {path}")
+    if not (existing.get("broadcast") and existing.get("ssh_user")):
+        print("[fleetpower] note: set broadcast/ssh_user in that file for WoL/OFF to work")
+    return 0
+
+
 # --- WoL (inlined so this file is standalone; mirrors tools/wol.py) ---
 def wake(mac: str, broadcast: str) -> None:
     hexmac = mac.replace(":", "").replace("-", "").strip()
@@ -114,7 +184,10 @@ def power_off(ip: str, user: str) -> tuple[bool, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="fleetpower", description="Power fleet nodes on/off by tier/name/ip.")
-    ap.add_argument("--state", required=True, choices=["on", "off"])
+    ap.add_argument("--state", choices=["on", "off"], help="power state (required unless --sync)")
+    ap.add_argument("--sync", action="store_true",
+                    help="pull node inventory from fleetd /nodes and OVERWRITE the local file, then exit")
+    ap.add_argument("--fleetd", help="fleetd base URL for --sync (default $DNC_FLEETD_URL or http://localhost:7431)")
     ap.add_argument("--tier", help="comma tiers, e.g. s3 or s1,s3")
     ap.add_argument("--nodes", help="comma names/numbers, e.g. 1,2,bc25005")
     ap.add_argument("--ips", help="comma IPs, e.g. .106,.123")
@@ -126,6 +199,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    if args.sync:
+        return sync_from_fleetd(args)
+    if not args.state:
+        ap.error("--state is required (on/off) unless you pass --sync")
     if not (args.all or args.tier or args.nodes or args.ips):
         ap.error("pick nodes with --tier / --nodes / --ips / --all")
 
