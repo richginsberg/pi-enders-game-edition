@@ -231,3 +231,55 @@ def upsert_task(task_id: str, task: TaskRecord) -> TaskRecord:
         task.started_at = task.updated_at
     db.upsert_task(task)
     return task
+
+
+# -- fleet power: wake/shutdown a tier (or nodes/ips) and stream progress -----------
+@app.get("/power/plan")
+def power_plan(
+    state: str, tier: str | None = None, nodes: str | None = None,
+    ips: str | None = None, all: bool = False, force: bool = False,
+) -> dict:
+    """Dry-run: resolve the selectors to the exact nodes an action would touch (and what
+    it would skip). Lets the Pi command show a confirm-prompt before firing anything."""
+    from . import power
+
+    if state not in ("on", "off"):
+        raise HTTPException(400, "state must be 'on' or 'off'")
+    try:
+        cfg = power.load_nodes()
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e)) from e
+    targets = power.select_targets(cfg, tier=tier, nodes=nodes, ips=ips, all_=all)
+    act, skipped = power.partition_never_sleep(targets, force=force) if state == "off" else (targets, [])
+    return {
+        "state": state,
+        "budget_s": power.BUDGET_ON_S if state == "on" else power.BUDGET_OFF_S,
+        "nodes": [{"name": n, "ip": d.get("ip"), "tier": d.get("tier")} for n, d in act],
+        "skipped": [{"name": n, "ip": d.get("ip"), "reason": "never_sleep"} for n, d in skipped],
+        "config": cfg.get("_path"),
+    }
+
+
+@app.get("/power/stream")
+async def power_stream(
+    state: str, tier: str | None = None, nodes: str | None = None,
+    ips: str | None = None, all: bool = False, force: bool = False,
+) -> StreamingResponse:
+    """Fire the power action and stream real-time SSE: an initial `plan`, per-node phase
+    changes (waking→booting→loading→serving, or stopping→offline) with elapsed+ETA,
+    `summary` heartbeats, and a final `done`."""
+    from . import power
+
+    if state not in ("on", "off"):
+        raise HTTPException(400, "state must be 'on' or 'off'")
+    try:
+        cfg = power.load_nodes()
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e)) from e
+    targets = power.select_targets(cfg, tier=tier, nodes=nodes, ips=ips, all_=all)
+
+    async def gen() -> AsyncIterator[str]:
+        async for event in power.watch(targets, state, cfg, force=force):
+            yield _sse(event)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

@@ -32,7 +32,7 @@ export async function contextPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 /** Consume a fleetd Server-Sent Events endpoint, yielding one parsed JSON event per `data:` frame. */
-export async function* fleetdStream<T>(method: "POST" | "PUT", path: string, body?: unknown): AsyncGenerator<T> {
+export async function* fleetdStream<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): AsyncGenerator<T> {
   const res = await fetch(`${FLEETD_BASE_URL}${path}`, {
     method,
     headers: { accept: "text/event-stream", ...(body === undefined ? {} : { "content-type": "application/json" }) },
