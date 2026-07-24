@@ -52,6 +52,44 @@ curl -s localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
 
 Point Pi extensions at it: `DNC_LITELLM_URL=http://<box>:4000`, `DNC_FLEETD_URL=http://<box>:7431`.
 
+## Verify the standup is complete (all three packages)
+`bootstrap.sh` installs `router`, `fleetd`, and `context` **editable** in one step
+(`uv pip install -e router fleetd context`). A box set up by hand — or where the repo
+wasn't fully present at bootstrap time — can end up with only the gateway installed,
+which looks fine (LiteLLM answers on :4000) but leaves the context sidecar and fleetd
+uninstalled. Symptom: **Pi slash commands that hit the context/fleetd services (e.g.
+`/recall`, `/remember`, `/distill`) silently return nothing.** Confirm all three:
+
+```bash
+~/dnc/.venv/bin/python -c "import dnc_router.strategy, fleetd.api, context.api; print('all three OK')"
+```
+
+If that raises `ModuleNotFoundError`, the box is a partial standup. Repair it by placing
+the missing package source under `~/dnc/<pkg>` and installing editable **with uv** (the
+uv-managed venv has no `pip`):
+
+```bash
+# copy the missing subtree(s) to the box first (tar-pipe; bare boxes have no rsync):
+#   tar czf - -C <repo> fleetd | ssh <box> 'mkdir -p ~/dnc/fleetd && tar xzf - -C ~/dnc/fleetd'
+export PATH="$HOME/.local/bin:$PATH"
+VIRTUAL_ENV="$HOME/dnc/.venv" uv pip install -e ~/dnc/fleetd -e ~/dnc/context
+[ -f ~/dnc/hosts.yaml ] || cp ~/dnc/fleetd/hosts.example.yaml ~/dnc/hosts.yaml   # fleetd needs it
+```
+
+## Validate auto-start survives a reboot
+The units are `enable`d (symlinked into `multi-user.target.wants`) and — being **system**
+units with `WantedBy=multi-user.target` — start at boot with no login/linger required.
+Prove it end-to-end rather than trusting `is-enabled`:
+
+```bash
+BOOT=$(cat /proc/sys/kernel/random/boot_id); sudo systemctl reboot
+# after it comes back (fresh boot_id):
+for u in dnc-litellm dnc-fleetd dnc-context; do echo "$u: $(systemctl is-active $u)"; done
+curl -s localhost:4000/health/readiness; curl -s localhost:7431/healthz; curl -s localhost:7432/healthz
+```
+All three should be `active` within seconds of boot, and `/healthz` on the context
+sidecar returns `{"ok":true}` only when Postgres/pgvector is reachable.
+
 ## Optional: context store (pgvector)
 
 ```bash
