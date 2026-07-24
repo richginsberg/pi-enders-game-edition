@@ -150,8 +150,12 @@ def validate_ip(ip: str) -> str:
     return ip
 
 
-def _node_entry(ip: str, mac: str, tier: str, never_sleep: bool, port: int | None) -> dict:
+def _node_entry(
+    ip: str, mac: str, tier: str, never_sleep: bool, port: int | None, chassis: str | None = None
+) -> dict:
     e: dict = {"ip": ip, "mac": mac, "tier": tier}
+    if chassis:
+        e["chassis"] = chassis
     if port:
         e["port"] = int(port)
     if never_sleep:
@@ -162,6 +166,8 @@ def _node_entry(ip: str, mac: str, tier: str, never_sleep: bool, port: int | Non
 def render_node_line(name: str, e: dict) -> str:
     """One-line flow entry matching the node file's convention."""
     parts = [f"ip: {e['ip']}", f'mac: "{e["mac"]}"', f"tier: {e['tier']}"]
+    if e.get("chassis"):
+        parts.append(f"chassis: {e['chassis']}")
     if e.get("port"):
         parts.append(f"port: {e['port']}")
     if e.get("never_sleep"):
@@ -205,7 +211,8 @@ def _upsert_line(text: str, name: str, line: str) -> str:
 
 def register_node(
     path: str, name: str, ip: str, mac: str, tier: str,
-    *, never_sleep: bool = False, port: int | None = None, overwrite: bool = False,
+    *, never_sleep: bool = False, port: int | None = None,
+    chassis: str | None = None, overwrite: bool = False,
 ) -> dict:
     """Validate + add (or replace) a node in the node file. Raises ValueError on bad
     input or on an existing name without overwrite."""
@@ -213,6 +220,8 @@ def register_node(
         raise ValueError(f"bad node name: {name!r} (letters/digits/-/_ only)")
     if tier not in TIERS_VALID:
         raise ValueError(f"bad tier: {tier!r} (want one of {sorted(TIERS_VALID)})")
+    if chassis is not None and chassis != "" and not NAME_RE.match(str(chassis)):
+        raise ValueError(f"bad chassis id: {chassis!r} (letters/digits/-/_ only)")
     ip, mac = validate_ip(ip), normalize_mac(mac)
 
     text = ""
@@ -226,7 +235,7 @@ def register_node(
         text = ("# fleetpower node inventory (local, gitignored). Set broadcast/ssh_user "
                 "for OFF/WoL.\n# broadcast: 192.168.1.255\n# ssh_user: youruser\nnodes:\n")
 
-    entry = _node_entry(ip, mac, tier, never_sleep, port)
+    entry = _node_entry(ip, mac, tier, never_sleep, port, chassis or None)
     new_text = _upsert_line(text, name, render_node_line(name, entry))
     if name not in ((yaml.safe_load(new_text) or {}).get("nodes") or {}):
         raise ValueError("internal error: node file edit did not register the node")
@@ -404,6 +413,41 @@ async def track_node(
         await asyncio.sleep(poll_s)
 
 
+# --- chassis-aware ordering (cooling first-to-wake / last-to-sleep) ----------------
+# The per-chassis fan-controller node (never_sleep, same `chassis` id as its mates) must
+# be RUNNING before its mates power on, and outlive them on a forced shutdown — otherwise
+# the mates run with no cooling. Ordering is scoped per chassis; nodes with no `chassis`
+# (e.g. single/multi-GPU S1/S2 boxes) have no cooling dependency and power in parallel.
+ON_REACHABLE = {"loading", "serving"}  # cooling node has booted (sshd up) => fans running
+
+
+def group_by_chassis(targets: list[tuple[str, dict]]) -> dict:
+    groups: dict = {}
+    for n, d in targets:
+        groups.setdefault(d.get("chassis"), []).append((n, d))
+    return groups
+
+
+def split_cooling(members: list[tuple[str, dict]]) -> tuple[list, list]:
+    """(cooling = never_sleep members, rest)."""
+    cooling = [(n, d) for n, d in members if d.get("never_sleep")]
+    rest = [(n, d) for n, d in members if not d.get("never_sleep")]
+    return cooling, rest
+
+
+class _Gate:
+    """One-shot latch a dependent waits on. `ok` reports whether the prerequisite met its
+    goal (cooling reachable / mate offline) vs. gave up (timeout)."""
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.ok = False
+
+    def resolve(self, ok: bool) -> None:
+        if not self.event.is_set():
+            self.ok = ok
+            self.event.set()
+
+
 async def watch(
     targets: list[tuple[str, dict]],
     state: str,
@@ -412,12 +456,16 @@ async def watch(
     force: bool = False,
     budget_s: float | None = None,
     poll_s: float = POLL_S,
+    wake_fn: Callable[[str, str], Any] = wake,
+    poweroff_fn: Callable[..., Any] = power_off_ssh,
+    ssh_probe: Callable[..., Any] = probe_tcp,
+    health_probe: Callable[..., Any] = probe_health,
+    now: Callable[[], float] = time.monotonic,
 ) -> AsyncIterator[dict]:
-    """Fire the power action, then stream node/summary events until all nodes settle.
-
-    Yields dicts: an initial `plan`, per-node `node` events on every phase change,
-    periodic `summary` heartbeats, and a final `done`. Consumers (fleetd's SSE route)
-    just json-encode each dict.
+    """Fire the power action (chassis-ordered) and stream node/summary events until every
+    node settles. Yields an initial `plan`, per-node `node` events on each phase change,
+    periodic `summary` heartbeats, and a final `done`. All network/clock hooks are
+    injectable so the ordering logic is testable without a real fleet.
     """
     budget = budget_s if budget_s is not None else (BUDGET_ON_S if state == "on" else BUDGET_OFF_S)
     broadcast = cfg.get("broadcast", "255.255.255.255")
@@ -426,59 +474,97 @@ async def watch(
     act, skipped = partition_never_sleep(targets, force=force) if state == "off" else (targets, [])
 
     yield {
-        "type": "plan",
-        "state": state,
-        "budget_s": budget,
-        "nodes": [{"name": n, "ip": d.get("ip"), "tier": d.get("tier")} for n, d in act],
+        "type": "plan", "state": state, "budget_s": budget,
+        "nodes": [{"name": n, "ip": d.get("ip"), "tier": d.get("tier"), "chassis": d.get("chassis")} for n, d in act],
         "skipped": [{"name": n, "ip": d.get("ip"), "reason": "never_sleep"} for n, d in skipped],
         "config": cfg.get("_path"),
     }
     if not act:
-        yield {"type": "done", "state": state, "total": 0, "done": 0, "timeout": 0}
+        yield {"type": "done", "state": state, "total": 0, "done": 0, "timeout": 0, "elapsed_s": 0}
         return
 
-    # Fire the action. WoL is instant; poweroff we kick off concurrently.
-    if state == "on":
-        for n, d in act:
-            try:
-                wake(d["mac"], broadcast)
-            except Exception as exc:  # noqa: BLE001
-                yield {"type": "node", "name": n, "ip": d.get("ip"), "tier": d.get("tier"),
-                       "phase": "error", "detail": f"WoL failed: {exc}", "elapsed_s": 0, "eta_s": 0}
-    else:
-        await asyncio.gather(*(power_off_ssh(d["ip"], user) for _, d in act), return_exceptions=True)
-
-    start = time.monotonic()
+    start = now()
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
     states: dict[str, str] = {n: ("waking" if state == "on" else "stopping") for n, _ in act}
 
-    async def run_one(n: str, d: dict) -> None:
-        await track_node(n, d, state, budget_s=budget, poll_s=poll_s, emit=queue.put_nowait)
+    def emit(ev: dict) -> None:
+        if ev.get("type") == "node":
+            states[ev["name"]] = ev["phase"]
+        queue.put_nowait(ev)
 
-    tasks = [asyncio.create_task(run_one(n, d)) for n, d in act]
+    def gate_emit(gate: _Gate | None) -> Callable[[dict], None]:
+        # Wrap emit so a tracked node also resolves its gate when it hits the goal phase.
+        def _e(ev: dict) -> None:
+            emit(ev)
+            if gate is not None and ev.get("type") == "node":
+                ph = ev["phase"]
+                if state == "on":
+                    if ph in ON_REACHABLE:
+                        gate.resolve(True)
+                    elif ph in ("timeout", "error"):
+                        gate.resolve(False)  # cooling failed => block mates
+                else:  # forced OFF: proceed to cooling once mates are down (or gave up)
+                    if ph in ("offline", "timeout"):
+                        gate.resolve(True)
+        return _e
+
+    async def fire(n: str, d: dict) -> None:
+        if state == "on":
+            try:
+                wake_fn(d["mac"], broadcast)
+            except Exception as exc:  # noqa: BLE001
+                emit({"type": "node", "name": n, "ip": d.get("ip"), "tier": d.get("tier"),
+                      "phase": "error", "detail": f"WoL failed: {exc}", "elapsed_s": 0, "eta_s": 0})
+        else:
+            await poweroff_fn(d["ip"], user)
+
+    async def run_node(n: str, d: dict, *, gate: _Gate | None = None, wait: list[_Gate] | None = None) -> None:
+        if wait:
+            for g in wait:
+                await g.event.wait()
+            if state == "on" and not all(g.ok for g in wait):
+                emit({"type": "node", "name": n, "ip": d.get("ip"), "tier": d.get("tier"),
+                      "phase": "blocked", "elapsed_s": 0, "eta_s": 0,
+                      "detail": "cooling node did not come up — not woken (use force to override)"})
+                return
+        await fire(n, d)
+        await track_node(n, d, state, budget_s=budget, poll_s=poll_s,
+                         emit=gate_emit(gate), now=now, ssh_probe=ssh_probe, health_probe=health_probe)
+
+    # Build tasks per chassis: cooling first-to-wake / last-to-sleep; others in parallel.
+    tasks: list[asyncio.Task] = []
+    for chassis, members in group_by_chassis(act).items():
+        cooling, rest = split_cooling(members)
+        if chassis is None or not cooling or not rest:
+            tasks += [asyncio.create_task(run_node(n, d)) for n, d in members]
+        elif state == "on":
+            gates = [_Gate() for _ in cooling]
+            tasks += [asyncio.create_task(run_node(n, d, gate=g)) for (n, d), g in zip(cooling, gates)]
+            tasks += [asyncio.create_task(run_node(n, d, wait=gates)) for n, d in rest]
+        else:  # forced OFF (cooling only present when --force): mates down, then cooling last
+            gates = [_Gate() for _ in rest]
+            tasks += [asyncio.create_task(run_node(n, d, gate=g)) for (n, d), g in zip(rest, gates)]
+            tasks += [asyncio.create_task(run_node(n, d, wait=gates)) for n, d in cooling]
 
     async def heartbeat() -> None:
-        # Periodic summary so the UI can show elapsed/ETA even between phase changes.
         while True:
             await asyncio.sleep(poll_s)
-            queue.put_nowait(summarize(states, state, time.monotonic() - start))
+            queue.put_nowait(summarize(states, state, now() - start))
 
-    hb = asyncio.create_task(heartbeat())
-    all_done = asyncio.create_task(asyncio.gather(*tasks))
+    hb = asyncio.create_task(heartbeat()) if poll_s > 0 else None
 
     async def sentinel() -> None:
-        await all_done
+        await asyncio.gather(*tasks, return_exceptions=True)
         queue.put_nowait(None)
 
     sent = asyncio.create_task(sentinel())
     try:
         while (item := await queue.get()) is not None:
-            if item.get("type") == "node":
-                states[item["name"]] = item["phase"]
             yield item
     finally:
-        hb.cancel()
+        if hb:
+            hb.cancel()
         for t in (*tasks, sent):
             t.cancel()
 
-    yield {**summarize(states, state, time.monotonic() - start), "type": "done"}
+    yield {**summarize(states, state, now() - start), "type": "done"}

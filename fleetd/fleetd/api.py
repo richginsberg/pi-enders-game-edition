@@ -242,6 +242,7 @@ class NodeReg(BaseModel):
     tier: str
     never_sleep: bool = False
     port: int | None = None
+    chassis: str | None = None
     overwrite: bool = False
 
 
@@ -266,7 +267,7 @@ def register_node(reg: NodeReg) -> dict:
         path = power.resolve_config_path(create=True)
         return power.register_node(
             path, reg.name, reg.ip, reg.mac, reg.tier,
-            never_sleep=reg.never_sleep, port=reg.port, overwrite=reg.overwrite,
+            never_sleep=reg.never_sleep, port=reg.port, chassis=reg.chassis, overwrite=reg.overwrite,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e

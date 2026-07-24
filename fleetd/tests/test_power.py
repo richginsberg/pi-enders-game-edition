@@ -87,6 +87,95 @@ def test_deregister_unknown_raises(tmp_path):
         power.deregister_node(path, "bc25099")
 
 
+def test_register_with_chassis_round_trips(tmp_path):
+    import yaml
+    path = _write(tmp_path)
+    power.register_node(path, "bc25013", "192.168.1.150", "aa:bb:cc:dd:ee:13", "s3",
+                        never_sleep=True, chassis="c2")
+    line = next(l for l in open(path).read().splitlines() if "bc25013" in l)
+    assert "chassis: c2" in line and "never_sleep: true" in line
+    cfg = yaml.safe_load(open(path).read())
+    assert cfg["nodes"]["bc25013"]["chassis"] == "c2"
+
+
+def test_register_rejects_bad_chassis(tmp_path):
+    path = _write(tmp_path)
+    with pytest.raises(ValueError, match="chassis"):
+        power.register_node(path, "bc25013", "192.168.1.150", "aa:bb:cc:dd:ee:13", "s3", chassis="bad id!")
+
+
+# -- chassis-aware ordering (grouping + gated wake/sleep) ----------------------------
+def test_group_and_split_cooling():
+    targets = [
+        ("a", {"chassis": "c1", "never_sleep": True}),
+        ("b", {"chassis": "c1"}),
+        ("gpu", {}),  # no chassis
+    ]
+    groups = power.group_by_chassis(targets)
+    assert set(groups) == {"c1", None}
+    cooling, rest = power.split_cooling(groups["c1"])
+    assert [n for n, _ in cooling] == ["a"] and [n for n, _ in rest] == ["b"]
+
+
+async def _collect(gen):
+    return [ev async for ev in gen]
+
+
+@pytest.mark.asyncio
+async def test_on_wakes_cooling_before_mates_in_chassis():
+    # Chassis c1: fan controller `fan` (never_sleep) + mate `m1`. `fan` must reach a
+    # reachable phase before `m1` is even woken (fired).
+    cfg = {"_path": "x", "nodes": {}}
+    targets = [
+        ("fan", {"ip": "10.0.0.1", "mac": "aa:bb:cc:dd:ee:01", "tier": "s3", "chassis": "c1", "never_sleep": True}),
+        ("m1", {"ip": "10.0.0.2", "mac": "aa:bb:cc:dd:ee:02", "tier": "s3", "chassis": "c1"}),
+    ]
+    woken: list[str] = []
+
+    async def fake_ssh(ip, port, timeout=2.0):
+        return True
+
+    async def fake_health(ip, port, timeout=3.0):
+        return 200
+
+    events = await _collect(power.watch(
+        targets, "on", cfg, poll_s=0, budget_s=90,
+        wake_fn=lambda mac, b: woken.append(mac[-2:]),  # "01" fan, "02" m1
+        ssh_probe=fake_ssh, health_probe=fake_health, now=lambda: 0.0,
+    ))
+    # fan (…01) must be woken first; m1 (…02) only after the fan's gate opened
+    assert woken == ["01", "02"]
+    phases = {e["name"]: e["phase"] for e in events if e.get("type") == "node"}
+    assert phases["fan"] == "serving" and phases["m1"] == "serving"
+
+
+@pytest.mark.asyncio
+async def test_on_blocks_mates_when_cooling_times_out():
+    cfg = {"_path": "x", "nodes": {}}
+    targets = [
+        ("fan", {"ip": "10.0.0.1", "mac": "aa:bb:cc:dd:ee:01", "tier": "s3", "chassis": "c1", "never_sleep": True}),
+        ("m1", {"ip": "10.0.0.2", "mac": "aa:bb:cc:dd:ee:02", "tier": "s3", "chassis": "c1"}),
+    ]
+    woken: list[str] = []
+
+    async def fake_ssh(ip, port, timeout=2.0):
+        return False  # never reachable
+
+    async def fake_health(ip, port, timeout=3.0):
+        return None
+
+    # budget_s=0 => the unreachable fan times out on its first poll, deterministically.
+    events = await _collect(power.watch(
+        targets, "on", cfg, poll_s=0, budget_s=0,
+        wake_fn=lambda mac, b: woken.append(mac[-2:]),
+        ssh_probe=fake_ssh, health_probe=fake_health, now=lambda: 0.0,
+    ))
+    phases = {e["name"]: e["phase"] for e in events if e.get("type") == "node"}
+    assert phases["fan"] == "timeout"
+    assert phases["m1"] == "blocked"      # never woken — no cooling
+    assert "02" not in woken              # mate WoL was never fired
+
+
 CFG = {
     "_path": "/x/fleet-nodes.yaml",
     "broadcast": "192.168.1.255",

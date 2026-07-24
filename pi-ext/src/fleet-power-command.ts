@@ -16,7 +16,7 @@ import { fleetdGet, fleetdSend, fleetdStream } from "./config.js";
 
 type Phase =
   | "waking" | "booting" | "loading" | "serving"
-  | "stopping" | "offline" | "timeout" | "error";
+  | "stopping" | "offline" | "timeout" | "error" | "blocked";
 
 interface NodeEvent {
   type: "node";
@@ -57,7 +57,7 @@ interface Plan {
 
 const ICON: Record<Phase, string> = {
   waking: "⏳", booting: "⏳", loading: "⏳", serving: "✅",
-  stopping: "⏻", offline: "⭘", timeout: "⚠️", error: "✗",
+  stopping: "⏻", offline: "⭘", timeout: "⚠️", error: "✗", blocked: "🚫",
 };
 const TIERS = new Set(["s0", "s1", "s2", "s3"]);
 
@@ -87,7 +87,7 @@ function nodeLine(e: NodeEvent): string {
   const timing =
     e.phase === "serving" || e.phase === "offline"
       ? `${e.elapsed_s.toFixed(0)}s`
-      : e.phase === "timeout" || e.phase === "error"
+      : e.phase === "timeout" || e.phase === "error" || e.phase === "blocked"
         ? (e.detail ?? "")
         : `${e.elapsed_s.toFixed(0)}s / ~${e.eta_s}s left`;
   return `  ${ICON[e.phase]} ${where} ${e.phase.padEnd(8)} ${timing}`;
@@ -109,12 +109,16 @@ async function showNodes(ui: ExtensionUIContext): Promise<void> {
   ui.setWidget("dnc-power", [`Fleet nodes (${nodes.length})`, ...lines]);
 }
 
-/** /fleet-power register <name> <ip> <mac> <tier> [never_sleep] [port=N] — prompts for any missing field. */
+/** /fleet-power register <name> <ip> <mac> <tier> [never_sleep] [chassis=ID] [port=N] — prompts for any missing core field. */
 async function registerNode(toks: string[], ui: ExtensionUIContext): Promise<void> {
-  let [name, ip, mac, tier] = toks;
+  const flags = toks.filter((t) => t.includes("=") || t === "never_sleep" || t === "never-sleep");
+  const [name0, ip0, mac0, tier0] = toks.filter((t) => !flags.includes(t));
+  let [name, ip, mac, tier] = [name0, ip0, mac0, tier0];
   const never_sleep = toks.includes("never_sleep") || toks.includes("never-sleep");
   const portTok = toks.find((t) => t.startsWith("port="));
   const port = portTok ? Number(portTok.slice(5)) : undefined;
+  const chassisTok = toks.find((t) => t.startsWith("chassis="));
+  const chassis = chassisTok ? chassisTok.slice(8) : undefined;
 
   name ||= (await ui.input("Node name", "bc25020")) ?? "";
   if (!name) return;
@@ -127,6 +131,7 @@ async function registerNode(toks: string[], ui: ExtensionUIContext): Promise<voi
 
   const body: Record<string, unknown> = { name, ip, mac, tier, never_sleep };
   if (port) body.port = port;
+  if (chassis) body.chassis = chassis;
   try {
     await fleetdSend<NodeRow>("POST", "/nodes", body);
     ui.notify(`registered ${name} (${ip}, ${tier})`, "info");
