@@ -109,6 +109,8 @@ def _pull_nodes(base: str) -> list[dict]:
 
 def _render_node_line(name: str, d: dict) -> str:
     parts = [f"ip: {d['ip']}", f'mac: "{d.get("mac", "")}"', f"tier: {d.get('tier')}"]
+    if d.get("chassis"):
+        parts.append(f"chassis: {d['chassis']}")
     if d.get("port"):
         parts.append(f"port: {d['port']}")
     if d.get("never_sleep"):
