@@ -53,17 +53,29 @@ This card **cannot reach S2/S3 pricing at any achievable throughput** — even a
 1,600 tok/s lands at $0.29/M vs $0.17. Its job is replacing *closed frontier models* with an
 open one you control.
 
-**Play B — cheap card, undercut the bulk tiers.** RTX 3090 24GB @ $0.22/hr:
+**Play B — cheap card, undercut the bulk tiers.** *Measured data says this does not work for
+a dense 27B.* From [club-3090](https://github.com/noonghunna/club-3090) (RTX 3090 recipes,
+same AutoRound quant and vLLM flags we'd use): **2×3090 turbo, 262K ctx = 269 TPS aggregate
+across 4 streams**. At $0.44/hr that is **$0.45 per 1M output** — 2.7× *more* than
+`gpt-oss-120b` at $0.17/M, not less.
 
-| sustained | $/M out | beats S3 $0.17? |
+| RTX 3090 sustained | $/M out @ $0.22/hr | beats S3 $0.17? |
 |---|---|---|
 | 100 tok/s | $0.611 | no |
-| 200 tok/s | $0.306 | no |
-| **400 tok/s** | **$0.153** | **yes** |
+| 269 tok/s (**measured, 2 cards @ $0.44**) | **$0.45** | **no** |
+| 400 tok/s | $0.153 | yes — but unattained by the 27B dense |
 
-400 tok/s aggregate on a 24 GB card needs a small model and **high `--max-num-seqs`** — i.e.
-a fan-out workload, not interactive chat. That's the only configuration where renting beats
-the cheap hosted tiers.
+The play survives only with a **3B-active MoE** (`Qwen3.6-35B-A3B`), which batches like a
+small model. club-3090 reports it single-card at "110/150 8-pack", but that notation is
+**ambiguous between per-stream and aggregate** — if per-stream (~1,200 aggregate) it lands
+near $0.05/M and wins on both price and quality. **Verify that number before betting on it.**
+
+⛔ **And a single 3090 is not safe for agentic work anyway.** club-3090's `CLIFFS.md`
+documents an open "Cliff 2": single-card 24 GB vLLM OOMs on GDN prefill above ~50K
+single-prompt, and multi-turn context fails around ~25K accumulated tokens. Their
+`SINGLE_CARD.md`: *"Single-card vLLM is not safe … for hermes / openhands / OpenCode /
+Cline."* Escapes are **TP=2** or llama.cpp/ik_llama (different allocator). Budget for two
+cards.
 
 **Note on `--max-num-seqs`:** it is the single biggest lever on rental economics and it
 trades directly against latency. `--max-num-seqs 2` (+ `--performance-mode interactivity`)
@@ -200,6 +212,80 @@ on a 5090. The known Blackwell FP8-KV blocker is specific to MLA-attention model
 **Worth one hour of Pro 6000 time (~$1.69) to settle:** AutoRound+working-MTP vs **NVFP4**
 (native Blackwell 4-bit kernels; the two NVFP4 repos have ~4× the downloads). If MTP delivers
 its claimed 2×, AutoRound wins; if MTP is nightly-blocked, NVFP4 is the safer default.
+
+## Model selection — quality vs throughput
+
+SWE-bench Verified is the only coding metric published for all four candidates (Qwen model
+cards + the gpt-oss model card). Throughput from Artificial Analysis.
+
+| Model | SWE-bench | Active params | Context | ~4-bit size | Throughput |
+|---|---|---|---|---|---|
+| **Qwen3.6-27B** (dense) | **77.2** | 27B (all) | 262K | 16.8 GB (Q4_K_M) | 57 tok/s |
+| **Qwen3.6-35B-A3B** (MoE) | 73.4 | **3B** | 262K | ~19–20 GB | — |
+| gpt-oss-120b (MoE) | 62.4 | 5.1B | 131K | needs 80 GB | 272 tok/s |
+| gpt-oss-20b (MoE) | 60.7 | 3.6B | 131K | fits 16 GB | — |
+
+**The inversion:** Qwen3.6-27B buys **+14.8 SWE-bench over gpt-oss-120b at ~1/5 the token
+rate** (dense 27B active vs 5.1B). It also beats it while fitting in 24 GB rather than 80 GB.
+`Qwen3.6-35B-A3B` is the interesting middle — still +11 over gpt-oss-120b, but 3B active, so
+it batches like a small model. It's also the only Qwen3.6 model vLLM's recipe page documents.
+
+**Hybrid attention makes long context cheap.** Qwen3.6-27B's `config.json` shows
+`layer_types` alternating **3 linear-attention layers to 1 full-attention** across 64 layers
+— only **16 layers** hold a growing KV cache. At fp8 that's **32 KiB/token**, so a full
+262,144-token context costs just **8.0 GiB** of KV. A conventional dense 27B would need 32 GiB.
+
+Consequence: on a 96 GB card, 18 GB of weights leaves a **70 GiB KV pool ≈ 2.3M tokens** —
+enough for **9 concurrent sequences at full 262K**, or 35 at 64K. A config with
+`--max-num-seqs 2` uses **23% of that pool**. Memory is not the limit; raise concurrency and
+re-measure (compute becomes the constraint).
+
+⚠️ **REAP / pruned checkpoints are unbenchmarked.** `qwen3.6-35b-reap` variants are community
+re-uploads, **not Qwen official, with no published evals** (one verified example prunes
+256→128 experts to ~19B). If a pruned checkpoint serves a tier, score it yourself first.
+
+⚠️ **gpt-oss needs the harmony response format**, not standard chat-completions tool calling
+(vLLM #22604) — a real integration cost for an OpenAI-shaped gateway.
+
+## Quantization by GPU generation
+
+| GPU | Arch | Best format | Why |
+|---|---|---|---|
+| RTX 3090 | Ampere SM86 | **AWQ/GPTQ-INT4 (Marlin)**, or IQ4_KS via ik_llama | no FP8 *or* FP4 tensor cores |
+| RTX 4090 / L40 | Ada SM89 | AWQ-INT4 or FP8 | FP8 yes, FP4 no |
+| RTX 5090 / Pro 6000 | Blackwell SM120 | **NVFP4** (dense) | native 4-bit tensor cores |
+
+**NVFP4 is Blackwell-only.** It is **W4A4** — weights *and* activations in 4-bit, so it buys
+real FLOPs; AWQ/GPTQ are W4A16 and buy only memory bandwidth. Measured on an RTX Pro 6000
+with Qwen3-32B: **1.9–2.1× BF16 throughput** at concurrency 8–64, TTFT 148 ms vs 338 ms at
+c=64. Accuracy holds (~97–99% recovery at ~30B; one eval had GPQA-D NVFP4 == BF16). Note it
+is ~15 GB vs ~14 GB for AWQ-INT4 — **slightly larger**; the win is compute, not bytes. There
+is **no published NVFP4-vs-AWQ throughput comparison** — the 1.9–2.1× is vs BF16.
+
+⚠️ **NVFP4 MoE on SM120 is the sharp edge.** Dense works; MoE does not (vLLM #35065 closed
+as not planned, #31085 still a feature request). Expect to need FlashInfer b12x cubins and
+explicit `TORCH_CUDA_ARCH_LIST=12.0`; stock images fail and scale-layout mismatches "produce
+silent garbage." Qwen3.6-27B is dense, so it is on the supported path — a 35B-A3B in NVFP4 is
+not.
+
+**Engine choice depends on VRAM headroom**, not dogma: vLLM wins when there is room to batch;
+on a VRAM-starved single 24 GB card, llama.cpp/ik_llama with a smaller quant (IQ4_KS ~17 GB)
+leaves headroom and can beat vLLM/AWQ outright. Keep llama.cpp for the BC-250 fleet.
+
+## Own vs rent
+
+club-3090's owned-hardware model: ~$4,000 for a 2×3090 node, ~500 W → ~$54/mo power,
+5-yr amortization → **~$120/mo all-in**, break-even around **~93 TPS sustained**; below
+~10 TPS the cloud wins outright.
+
+A rented Community 3090 at $0.22/hr is **~$158/mo if left running** — *worse than owning*.
+**Rental only wins for bursty use.** That is the same conclusion the physical fleet reaches
+from the other direction, and it is why burst exists alongside owned nodes rather than
+replacing them.
+
+Their power-limit finding transfers directly to any owned fleet: **290 W air / 330 W water**
+is the sweet spot, costing only 5–7% TPS, and the widely-repeated "230 W" figure is
+*outdated* — it costs ~16% efficiency on Qwen3.6 GDN kernels.
 
 ## Design
 
