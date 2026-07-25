@@ -25,7 +25,13 @@ model_list:
       model: openai/anthropic/claude-opus-5
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: { id: s0-opus5, dnc_squad: s0, max_input_tokens: 1000000, max_output_tokens: 64000 }
+    # dnc_billing tells the usage tracker how this endpoint is paid for
+    # (subscription | per_token | per_hour | local). Only you know if a key is behind a
+    # subscription, so it is declared, never guessed. input/output_cost_per_token make the
+    # gateway report ACTUAL spend instead of table estimates — $/token, so $5/M = 5e-6.
+    model_info: { id: s0-opus5, dnc_squad: s0, dnc_billing: per_token,
+                  input_cost_per_token: 0.000005, output_cost_per_token: 0.000025,
+                  max_input_tokens: 1000000, max_output_tokens: 64000 }
   - model_name: tier:s0
     litellm_params:
       model: openai/openai/gpt-5.6-sol
@@ -72,7 +78,9 @@ model_list:
       model: openai/openai/gpt-oss-120b
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: { id: s3-gptoss120b, dnc_squad: s3, max_input_tokens: 131072, max_output_tokens: 32000 }
+    model_info: { id: s3-gptoss120b, dnc_squad: s3, dnc_billing: per_token,
+                  input_cost_per_token: 0.000000037, output_cost_per_token: 0.00000017,
+                  max_input_tokens: 131072, max_output_tokens: 32000 }
   # FREE sibling. Rate-limited and best-effort: when it 429s, allowed_fails=1 cools it down
   # and traffic moves to the paid entry above. Good deal; never make it your only S3.
   - model_name: tier:s3

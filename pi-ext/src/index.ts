@@ -11,6 +11,7 @@ import { registerFleetPowerCommand } from "./fleet-power-command.js";
 import { registerFleetProvider } from "./provider.js";
 import { registerLastTier } from "./last-tier.js";
 import { registerFleetRouting } from "./fleet-routing.js";
+import { registerFleetUsage } from "./fleet-usage.js";
 import { registerTasksCommand } from "./tasks-command.js";
 import { registerTierHints } from "./tier-hints.js";
 
@@ -25,4 +26,5 @@ export default async function (pi: ExtensionAPI) {
   registerContextDistill(pi);
   registerLastTier(pi);
   registerFleetRouting(pi);
+  registerFleetUsage(pi);
 }

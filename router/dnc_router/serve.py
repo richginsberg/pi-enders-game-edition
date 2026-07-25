@@ -98,6 +98,120 @@ def main() -> None:
 
     ps.app.add_middleware(BaseHTTPMiddleware, dispatch=_stamp_squad)
 
+    # --- usage + cost capture -------------------------------------------------------
+    # The Pi extension cannot compute this itself: its after_provider_response hook carries
+    # only {status, headers}, and no extension event exposes token counts. LiteLLM's own
+    # accounting is also unavailable in practice (response-cost header reads 0.0 with no
+    # prices registered, and /spend/logs is empty while the custom strategy is attached —
+    # task #27). The usage block IS in the body we're already wrapping, so capture it here
+    # and expose a rollup at /dnc/usage for the extension to poll.
+    from . import usage as U
+
+    def _session_of(request) -> str:
+        return (request.headers.get("x-dnc-session")
+                or request.headers.get("x-session-id") or "main")
+
+    def _model_of(model_id: str | None, response) -> str | None:
+        """The UNDERLYING model string (e.g. openai/anthropic/claude-opus-5), not the model
+        group ("tier:s0"). Pricing keys off the real model name, so returning the group here
+        would silently make every table lookup miss and report everything as unpriced."""
+        try:
+            for d in (getattr(ps.llm_router, "model_list", []) or []):
+                dd = _as_dict(d)
+                if dd.get("model_info", {}).get("id") == model_id:
+                    return dd.get("litellm_params", {}).get("model") or dd.get("model_name")
+        except Exception:
+            pass
+        return response.headers.get("x-litellm-model-group")
+
+    def _prices_for(model_id: str | None) -> tuple[float | None, float | None]:
+        """Per-token prices the operator registered in model_info, if any."""
+        try:
+            for d in (getattr(ps.llm_router, "model_list", []) or []):
+                dd = _as_dict(d)
+                if dd.get("model_info", {}).get("id") == model_id:
+                    mi = dd["model_info"]
+                    return mi.get("input_cost_per_token"), mi.get("output_cost_per_token")
+        except Exception:
+            pass
+        return None, None
+
+    def _billing_for(model_id: str | None) -> str | None:
+        try:
+            for d in (getattr(ps.llm_router, "model_list", []) or []):
+                dd = _as_dict(d)
+                if dd.get("model_info", {}).get("id") == model_id:
+                    return dd["model_info"].get("dnc_billing")
+        except Exception:
+            pass
+        return None
+
+    async def _capture_usage(request, call_next):
+        response = await call_next(request)
+        if not request.url.path.endswith(("/chat/completions", "/completions", "/responses")):
+            return response
+        try:
+            headers = {k.lower(): v for k, v in response.headers.items()}
+            model_id = headers.get("x-litellm-model-id")
+            session = _session_of(request)
+            model = _model_of(model_id, response)
+            pin, pout = _prices_for(model_id)
+            billing = _billing_for(model_id)
+
+            def _record(u):
+                if u is None:
+                    return
+                U.LEDGER.add(U.record_from(
+                    session=session, headers=headers, usage=u, model=model,
+                    declared_billing=billing, price_in=pin, price_out=pout))
+
+            body_iter = getattr(response, "body_iterator", None)
+            if body_iter is None:                      # buffered JSON response
+                return response
+            # Streaming: tee the frames through, then parse usage from the accumulated text.
+            # We must not buffer the whole stream before forwarding it, or we'd destroy
+            # time-to-first-token — so yield each chunk immediately and accumulate alongside.
+            chunks: list[bytes] = []
+
+            async def _tee():
+                try:
+                    async for chunk in body_iter:
+                        chunks.append(chunk)
+                        yield chunk
+                finally:
+                    try:
+                        text = b"".join(chunks).decode("utf-8", "replace")
+                        _record(U.usage_from_sse(text) or U.parse_usage(_maybe_json(text)))
+                    except Exception:
+                        pass
+
+            response.body_iterator = _tee()
+        except Exception:
+            pass
+        return response
+
+    def _maybe_json(text: str):
+        try:
+            return __import__("json").loads(text)
+        except Exception:
+            return None
+
+    ps.app.add_middleware(BaseHTTPMiddleware, dispatch=_capture_usage)
+
+    @ps.app.get("/dnc/usage")
+    async def _dnc_usage(session: str | None = None, detail: bool = False):
+        """Live per-session usage rollup: tokens, cache hits, estimated spend, and the
+        subscription / per-token / per-hour / local mix. Consumed by the Pi status bar."""
+        out = {"session": session or "all", **U.LEDGER.rollup(session)}
+        if detail:
+            out["calls"] = [U.as_dict(r) for r in U.LEDGER.records(session)[-100:]]
+        return out
+
+    @ps.app.post("/dnc/usage/reset")
+    async def _dnc_usage_reset():
+        U.LEDGER.clear()
+        return {"ok": True}
+
     proxy_lifespan = ps.proxy_startup_event  # the proxy's own @asynccontextmanager
 
     @asynccontextmanager
