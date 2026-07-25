@@ -8,6 +8,7 @@ import { registerContextInjection } from "./context-inject.js";
 import { registerDeployCommand } from "./deploy-command.js";
 import { registerFleetCommand } from "./fleet-command.js";
 import { registerFleetPowerCommand } from "./fleet-power-command.js";
+import { registerFleetSetup } from "./fleet-setup-command.js";
 import { registerFleetProvider } from "./provider.js";
 import { registerLastTier } from "./last-tier.js";
 import { registerFleetRouting } from "./fleet-routing.js";
@@ -18,6 +19,7 @@ import { registerTierHints } from "./tier-hints.js";
 export default async function (pi: ExtensionAPI) {
   await registerFleetProvider(pi);
   registerFleetCommand(pi);
+  registerFleetSetup(pi);
   registerFleetPowerCommand(pi);
   registerTasksCommand(pi);
   registerTierHints(pi);

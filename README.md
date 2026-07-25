@@ -72,36 +72,78 @@ on a 35B reasoning model).
 
 # Cloud-only setup (default)
 
-No hardware. Three components: Pi (the agent), the Pi extension (fleet-aware UX), and
-LiteLLM + the custom router (the tiering brain). `fleetd` is **not needed** — it exists to
-manage machines, and in this mode there are none.
+No hardware. You need **one API key**. Install once, then configure entirely from inside Pi.
+
+### 1. Install (once)
 
 ```bash
-# 1. Router + gateway
-cd router && pip install -e .
-cp litellm-config.cloud.example.yaml litellm-config.yaml   # gitignored; edit freely
-export OPENROUTER_API_KEY=sk-or-...          # the only key strictly required
-export LITELLM_MASTER_KEY=$(openssl rand -base64 32)
+git clone <this repo> && cd divide-and-conquer
 
-# IMPORTANT: use the launcher, not plain `litellm`. `tier:auto` (complexity tiers +
-# prefix-hash affinity) is a custom routing strategy the proxy YAML cannot register.
-python -m dnc_router.serve --config litellm-config.yaml --host 0.0.0.0 --port 4000
+pip install -e router -e fleetd            # gateway + the config daemon
+cd pi-ext && npm install && ln -s "$(pwd)" ~/.pi/agent/extensions/divide-and-conquer && cd ..
 
-# 2. Pi extension
-cd ../pi-ext && npm install
-ln -s "$(pwd)" ~/.pi/agent/extensions/divide-and-conquer
-export DNC_LITELLM_URL=http://localhost:4000
+export LITELLM_MASTER_KEY=$(openssl rand -base64 32)   # add to ~/.bashrc
+export DNC_LITELLM_URL=http://localhost:4000           # add to ~/.bashrc
+export DNC_FLEETD_URL=http://localhost:7431            # add to ~/.bashrc
 
-# 3. Verify
-curl -s localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+fleetd serve &                                          # config daemon (:7431)
+python -m dnc_router.serve --config ~/dnc/litellm-config.yaml --host 0.0.0.0 --port 4000 &
 ```
 
-In Pi, pick model `fleet/tier:auto` and drive the tier with `/complexity low|medium|high|max`,
-or pin a tier directly with `fleet/tier:s2`. The response footer shows which tier actually
-answered (`x-dnc-squad`).
+> Use the **launcher**, not plain `litellm`: `tier:auto` (complexity tiers + prefix-hash
+> affinity) is a custom routing strategy the proxy YAML cannot register.
 
-For durability (systemd units that survive reboot), see [`deploy/README.md`](deploy/README.md) —
-in cloud-only mode you only need the `dnc-litellm` unit.
+### 2. Configure — from Pi, no YAML
+
+Start Pi and run:
+
+```
+/fleet-setup
+```
+
+It walks you through the whole thing and ends by proving it works:
+
+1. **Pick a provider** — OpenRouter (frontier + open models, one key) or DeepInfra (open
+   weights only, very cheap). Groq and Together are there too.
+2. **Paste the API key** — written to the gateway's env file at `chmod 600`. *This is the
+   step that's easy to get wrong by hand: the systemd unit reads the key from
+   `EnvironmentFile`, so `export`ing it in your shell does **not** survive a restart.* The
+   key is never logged, echoed, or returned by the API.
+3. **Accept the recommended tier models, or pick each one** from a priced catalog.
+4. **Apply + restart + verify** — it rewrites the config, restarts the gateway, then fires a
+   1-token completion at **every tier** and shows ✅/❌ per tier. A mistyped model slug or a
+   missing key fails *here*, at setup, instead of mid-task.
+
+Then in Pi choose model `fleet/tier:auto` and drive it with
+`/complexity low|medium|high|max`, or pin a tier with `fleet/tier:s2`. The footer shows which
+tier actually answered.
+
+### Changing things later
+
+| Command | What it does |
+|---|---|
+| `/fleet-setup` | Re-run the guided flow |
+| `/fleet-provider` | List providers, show which have a key |
+| `/fleet-provider deepinfra <key>` | Set a key without the wizard |
+| `/fleet-model` | Show the current tier → model mapping |
+| `/fleet-model s2` | Browse the priced catalog for one tier and pick |
+| `/fleet-model s2 deepseek/deepseek-v4-flash` | Set one tier directly |
+| `/fleet-verify` | Re-probe every tier |
+| `/fleet-usage` | Session tokens, spend, and the subscription vs pay-per-token mix |
+
+Every change is applied, the gateway restarted, and all tiers re-probed automatically.
+
+**Where it's stored:** `~/dnc/tiers.yaml` (which model backs each tier) renders into a
+marker-fenced block of `~/dnc/litellm-config.yaml`. Anything you hand-write outside those
+markers is preserved, so the wizard and manual editing coexist. Keys live only in
+`~/dnc/.env` (chmod 600, gitignored).
+
+**Prefer to do it by hand?** Copy
+[`router/litellm-config.cloud.example.yaml`](router/litellm-config.cloud.example.yaml) to
+`~/dnc/litellm-config.yaml`, put `OPENROUTER_API_KEY=sk-or-…` in `~/dnc/.env`, and restart.
+
+For units that survive a reboot see [`deploy/README.md`](deploy/README.md) — in cloud-only
+mode you need `dnc-litellm` and `dnc-fleetd`.
 
 ## The tier ladder
 

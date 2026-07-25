@@ -295,6 +295,161 @@ def deregister_node(name: str) -> dict:
         raise HTTPException(404, str(e)) from e
 
 
+# -- provider / tier setup (driven by /fleet-setup in Pi) ---------------------------
+class KeyBody(BaseModel):
+    api_key: str
+
+
+class TiersBody(BaseModel):
+    provider: str | None = None
+    tiers: dict[str, str] | None = None
+    apply: bool = False
+    restart: bool = True
+
+
+@app.get("/providers")
+def list_providers() -> dict:
+    """Known providers, and whether each already has a key on the gateway. Keys themselves
+    are never returned."""
+    from . import providers as P
+
+    return {
+        "current": P.load_tiers().get("provider"),
+        "providers": [{
+            "key": p.key, "label": p.label, "api_base": p.api_base, "key_env": p.key_env,
+            "signup": p.signup, "has_closed_models": p.has_closed_models, "note": p.note,
+            "key_present": P.has_env_var(p.key_env),
+        } for p in P.PROVIDERS.values()],
+    }
+
+
+@app.get("/providers/{provider}/catalog")
+def provider_catalog(provider: str) -> dict:
+    from . import providers as P
+
+    if provider not in P.PROVIDERS:
+        raise HTTPException(404, f"unknown provider {provider}")
+    return {"provider": provider, "catalog": P.CATALOG.get(provider, {}),
+            "defaults": P.defaults_for(provider)}
+
+
+@app.post("/providers/{provider}/key")
+def set_provider_key(provider: str, body: KeyBody) -> dict:
+    """Write the provider's API key to the gateway's env file (chmod 600).
+
+    This is the step that is easy to get wrong by hand: the systemd unit reads the key from
+    EnvironmentFile, so exporting it in a shell does not survive a restart. The key is never
+    logged or echoed back — only a masked form is returned so you can confirm it landed."""
+    from . import providers as P
+
+    if provider not in P.PROVIDERS:
+        raise HTTPException(404, f"unknown provider {provider}")
+    key = body.api_key.strip()
+    if not key:
+        raise HTTPException(400, "empty api_key")
+    var = P.PROVIDERS[provider].key_env
+    try:
+        path = P.set_env_var(var, key)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "env_var": var, "path": path, "masked": P.mask(key),
+            "note": "restart the gateway (or POST /tiers with apply=true) to load it"}
+
+
+@app.get("/tiers")
+def get_tiers() -> dict:
+    from . import providers as P
+
+    cfg = P.load_tiers()
+    prov = P.PROVIDERS.get(cfg["provider"])
+    return {**cfg, "key_present": P.has_env_var(prov.key_env) if prov else False,
+            "key_env": prov.key_env if prov else None, "path": P.tiers_path()}
+
+
+@app.post("/tiers")
+def set_tiers(body: TiersBody) -> dict:
+    """Change the provider and/or which model backs each tier; optionally write it into the
+    LiteLLM config and restart the gateway."""
+    from . import litellm_sync, providers as P
+
+    cfg = P.load_tiers()
+    if body.provider:
+        if body.provider not in P.PROVIDERS:
+            raise HTTPException(404, f"unknown provider {body.provider}")
+        if body.provider != cfg["provider"] and not body.tiers:
+            cfg["tiers"] = P.defaults_for(body.provider)   # sensible picks for the new provider
+        cfg["provider"] = body.provider
+    if body.tiers:
+        cfg.setdefault("tiers", {}).update(body.tiers)
+
+    errs = P.validate(cfg)
+    if errs:
+        raise HTTPException(400, "; ".join(errs))
+    P.save_tiers(cfg)
+
+    out: dict = {**cfg, "applied": False, "restarted": False, "path": P.tiers_path()}
+    if not body.apply:
+        return out
+
+    config_path = os.environ.get("DNC_LITELLM_CONFIG", os.path.expanduser("~/dnc/litellm-config.yaml"))
+    text = ""
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            text = f.read()
+    try:
+        new_text = P.apply_to_config(text or "model_list:\n", cfg)
+    except Exception as e:
+        raise HTTPException(500, f"render failed: {e}") from e
+    with open(f"{config_path}.bak-tiers", "w") as f:
+        f.write(text)
+    litellm_sync._atomic_write(config_path, new_text)
+    out.update(applied=True, config=config_path, backup=f"{config_path}.bak-tiers")
+
+    if body.restart:
+        import subprocess
+        try:
+            subprocess.run(["sudo", "systemctl", "restart", "dnc-litellm"], check=True, timeout=90)
+            out["restarted"] = True
+        except Exception as e:  # noqa: BLE001
+            out["restart_error"] = str(e)
+    return out
+
+
+@app.post("/tiers/verify")
+async def verify_tiers() -> dict:
+    """Send a 1-token completion to every tier and report which actually answer.
+
+    Worth doing after any change: a mistyped model slug or a missing key fails here, at
+    setup time, instead of mid-task."""
+    import httpx
+
+    from . import providers as P
+
+    cfg = P.load_tiers()
+    base = os.environ.get("DNC_LITELLM_URL", "http://localhost:4000")
+    key = os.environ.get("LITELLM_MASTER_KEY", "")
+    results = []
+    async with httpx.AsyncClient(timeout=60) as c:
+        for tier in P.TIERS:
+            model = cfg["tiers"].get(tier)
+            if not model:
+                continue
+            row = {"tier": tier, "model": model, "ok": False, "detail": ""}
+            try:
+                r = await c.post(
+                    f"{base}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json={"model": f"tier:{tier}",
+                          "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+                row["ok"] = r.status_code == 200
+                row["detail"] = "ok" if row["ok"] else f"HTTP {r.status_code}: {r.text[:160]}"
+            except Exception as e:  # noqa: BLE001
+                row["detail"] = f"{type(e).__name__}: {e}"
+            results.append(row)
+    return {"provider": cfg["provider"], "results": results,
+            "all_ok": bool(results) and all(r["ok"] for r in results)}
+
+
 @app.post("/litellm/sync")
 def litellm_sync_endpoint(restart: bool = True) -> dict:
     """Regenerate the LiteLLM S3 node entries from the node registry (marker-fenced;
