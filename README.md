@@ -158,9 +158,15 @@ it. Opt-in and yours to validate; see
 
 ## Burst GPU — rent a card, saturate it, give it back
 
-`pip install -e burst/` adds an optional tier backed by a **rented** GPU, for work that is
-too big for the cheap APIs and too expensive on the frontier ones. It mounts into fleetd
-automatically (`/burst/*`) and ships a CLI:
+`pip install -e burst/` adds an optional tier backed by a **rented** GPU, for sustained work
+you would rather not send to a frontier API. It mounts into fleetd automatically
+(`/burst/*`) and ships a CLI:
+
+> **Renting swaps the model, it does not move the model.** You can only run **open weights**
+> on rented hardware — Claude, GPT-5.6, Grok and Gemini are closed, so there is no "run Opus
+> on my own GPU" option. A burst node runs Qwen3.6 / gpt-oss / DeepSeek. Every dollar
+> comparison below is therefore a **substitution with a real quality delta**, not a discount
+> on the same output. See [the caveat in full](docs/burst-gpu.md#first-renting-swaps-the-model-it-does-not-move-the-model).
 
 ```bash
 dnc-burst capacity --model qwen3.6-35b-a3b --context 262144 --min-seqs 8   # which card, and why

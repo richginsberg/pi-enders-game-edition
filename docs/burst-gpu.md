@@ -13,45 +13,80 @@ registry → `litellm-sync` plumbing the physical nodes already use.
    *doubles* the volume-disk rate ($0.10 → **$0.20/GB/mo**), wipes the container disk,
    releases the GPU with **no reservation**, and a restart can silently hand you a
    **zero-GPU pod** that still bills storage. Use **network volume + terminate** instead.
-2. **Which card you rent decides which tier you can undercut.** A $0.22/hr RTX 3090
-   saturated with a small model beats the cheap API tiers. A $1.69/hr RTX Pro 6000 never
-   can — at *any* throughput — but it comfortably displaces S0/S1.
+2. **Which card you rent decides which price point you can undercut.** A $0.22/hr RTX 3090
+   saturated with a small model can approach the cheap API tiers. A $1.69/hr RTX Pro 6000
+   never can — at *any* throughput.
 3. **Don't run GGUF under vLLM.** It's out-of-tree and "highly experimental and
    under-optimized". You don't need to build a quant either — good ones already exist.
 
+## First: renting swaps the model, it does not move the model
+
+⚠️ **You can only run open weights on a GPU you rent.** Claude (Opus/Sonnet/Fable), GPT-5.6,
+Grok and Gemini are closed — there is no checkpoint to download, so "rent a card and run
+Opus more cheaply" is not a thing that exists. What you can rent is hardware to run
+**Qwen3.6, gpt-oss, DeepSeek, GLM, Llama** and friends.
+
+So every cost comparison below is a **substitution**, not a discount:
+
+> *"If I stop sending this work to a closed frontier API and send it to an open model I host
+> myself, what happens to the bill?"*
+
+That question has a cost answer **and a quality answer**, and only the cost answer is in the
+tables. The dollar figures tell you the budget you would free up — they say nothing about
+whether the open model does the job as well. Treat the price columns for closed models as
+*"the spend being displaced"*, never as a like-for-like rate for the same output.
+
+What we can compare like-for-like is open vs open, where published SWE-bench Verified exists:
+**Qwen3.6-27B 77.2 · Qwen3.6-35B-A3B 73.4 · gpt-oss-120b 62.4 · gpt-oss-20b 60.7.** We have
+**no published SWE-bench figures for the closed frontier models in this repo**, so this doc
+makes no claim — in either direction — about how a self-hosted Qwen compares to Opus 5 or
+Sonnet 5. Benchmark your own workload before substituting.
+
 ## Economics
 
-Break-even is `sustained tok/s = hourly_rate ÷ price_per_output_token`. Below that rate the
-hosted API is cheaper, because rental bills wall-clock, not tokens.
+Break-even is `sustained tok/s = hourly_rate ÷ price_per_output_token`. Below that rate,
+buying the tokens is cheaper than renting the hours, because rental bills wall-clock.
 
-### Break-even sustained tok/s, by card and target tier
+### Break-even sustained tok/s to match a given price point
 
-RunPod **Community Cloud** rates.
+RunPod **Community Cloud** rates. Read a row as *"to make renting cheaper than paying this
+much per million output tokens, the rented card must sustain N tok/s."*
+Rows marked **(closed)** are spend you would be **displacing by switching models** — they are
+not self-hostable, and the quality delta is unmeasured here.
 
-| Target tier ($/M out) | 3080 Ti 12GB $0.18 | 3090 24GB $0.22 | 5090 32GB $0.69 | L40 48GB $0.69 | A100 80GB $1.19 | Pro 6000 96GB $1.69 |
+| Price point being undercut ($/M out) | 3080 Ti 12GB $0.18 | 3090 24GB $0.22 | 5090 32GB $0.69 | L40 48GB $0.69 | A100 80GB $1.19 | Pro 6000 96GB $1.69 |
 |---|---|---|---|---|---|---|
-| S0 `opus-5` 25.00 | 2 | 2 | 8 | 8 | 13 | **19** |
-| S1 `sonnet-5` 10.00 | 5 | 6 | 19 | 19 | 33 | **47** |
-| S1 `deepseek-v4-pro` 0.87 | 57 | 70 | 220 | 220 | 380 | 540 |
-| S2 `deepseek-v4-flash` 0.188 | 266 | 325 | 1,020 | 1,020 | 1,758 | 2,497 |
-| S3 `gpt-oss-120b` 0.170 | **294** | **359** | 1,127 | 1,127 | 1,944 | 2,761 |
+| `opus-5` 25.00 **(closed)** | 2 | 2 | 8 | 8 | 13 | **19** |
+| `sonnet-5` 10.00 **(closed)** | 5 | 6 | 19 | 19 | 33 | **47** |
+| `deepseek-v4-pro` 0.87 (open, hosted) | 57 | 70 | 220 | 220 | 380 | 540 |
+| `deepseek-v4-flash` 0.188 (open, hosted) | 266 | 325 | 1,020 | 1,020 | 1,758 | 2,497 |
+| `gpt-oss-120b` 0.170 (open, hosted) | **294** | **359** | 1,127 | 1,127 | 1,944 | 2,761 |
+
+The bottom three rows are the honest apples-to-apples test: **the same open weights, hosted
+by someone else at scale versus hosted by you on a rented card.** That comparison is brutal
+and it is the one that matters — see Play B.
 
 ### The two plays
 
-**Play A — big card, displace the frontier.** RTX Pro 6000 96GB @ $1.69/hr running
-Qwen3.6-27B-int4 at ~100 tok/s (`--max-num-seqs 2`) = **$4.69 per 1M output tokens**:
+**Play A — big card, substitute an open model for frontier-tier work.** RTX Pro 6000 96GB @
+$1.69/hr running Qwen3.6-27B-int4 at ~100 tok/s (`--max-num-seqs 2`) = **$4.69 per 1M output
+tokens**:
 
-| vs | verdict |
-|---|---|
-| S0 `opus-5` $25/M | **rental 5.3× cheaper** ✅ |
-| S1 `sonnet-5` $10/M | **rental 2.1× cheaper** ✅ |
-| S1 `deepseek-v4-pro` $0.87/M | API 5.4× cheaper ❌ |
-| S2 `deepseek-v4-flash` $0.188/M | API 25× cheaper ❌ |
-| S3 `gpt-oss-120b` $0.17/M | API 27.6× cheaper ❌ |
+| Compared with | Cost outcome | Same model? |
+|---|---|---|
+| `opus-5` $25/M | rental **5.3× cheaper** | ❌ **no — different model, quality delta unmeasured** |
+| `sonnet-5` $10/M | rental **2.1× cheaper** | ❌ **no — different model, quality delta unmeasured** |
+| `deepseek-v4-pro` $0.87/M | API 5.4× cheaper | open weights, hosted cheaper than you can |
+| `deepseek-v4-flash` $0.188/M | API 25× cheaper | open weights, hosted cheaper than you can |
+| `gpt-oss-120b` $0.17/M | API 27.6× cheaper | open weights, hosted cheaper than you can |
+
+Read the first two rows as a **budget swap you may or may not accept on quality**, not as a
+5.3× discount on Opus. The last three are the sobering ones: for open weights, a hosted API
+beats your rented card by 5–28×, because the provider runs the same model at far better
+utilisation than you will.
 
 This card **cannot reach S2/S3 pricing at any achievable throughput** — even a fantasy
-1,600 tok/s lands at $0.29/M vs $0.17. Its job is replacing *closed frontier models* with an
-open one you control.
+1,600 tok/s lands at $0.29/M vs $0.17.
 
 **Play B — cheap card, undercut the bulk tiers.** *Measured data says this does not work for
 a dense 27B.* From [club-3090](https://github.com/noonghunna/club-3090) (RTX 3090 recipes,

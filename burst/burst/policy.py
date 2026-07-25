@@ -145,8 +145,9 @@ def should_burst(
     return Decision(
         Verdict.BURST,
         f"{replicas} node(s) x {demand.projected_hours:.1f}h at ${econ.gpu_usd_per_hr:.2f}/hr "
-        f"= ${projected_cost:.2f}, vs ${fallback_cost:.2f} on the fallback tier "
-        f"(saves ${fallback_cost - projected_cost:.2f})",
+        f"= ${projected_cost:.2f}, displacing ${fallback_cost:.2f} of spend at "
+        f"${econ.fallback_usd_per_m_out:.3f}/M (frees ${fallback_cost - projected_cost:.2f}; "
+        f"substitutes an open model — cost only, not a quality claim)",
         replicas, projected_cost, fallback_cost,
     )
 

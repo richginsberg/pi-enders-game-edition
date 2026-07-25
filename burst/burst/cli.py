@@ -78,9 +78,16 @@ def switches() -> None:
 def gate(tokens: int = typer.Option(..., help="projected OUTPUT tokens"),
          hours: float = typer.Option(..., help="projected duration"),
          tok_s: float = typer.Option(..., help="expected aggregate tok/s"),
-         fallback_usd_per_m: float = 10.0, gpu: str = "rtxpro6000",
-         saturation: float = 1.0) -> None:
-    """Should we rent? Prints the determination and the money either way."""
+         fallback_usd_per_m: float = typer.Option(
+             10.0, help="$/M output of the price point you'd otherwise pay (the spend being "
+                        "displaced), NOT a rate for the same model"),
+         gpu: str = "rtxpro6000", saturation: float = 1.0) -> None:
+    """Should we rent? Prints the determination and the money either way.
+
+    NOTE: a rented GPU runs OPEN WEIGHTS only. Closed models (Claude, GPT-5.6, Grok, Gemini)
+    cannot be self-hosted, so a favourable verdict means "substituting an open model here
+    costs less", never "the same output, cheaper".
+    """
     from .policy import Economics
     from .api import policy_from_env
     pol = policy_from_env()
@@ -90,8 +97,11 @@ def gate(tokens: int = typer.Option(..., help="projected OUTPUT tokens"),
     typer.secho(f"{d.verdict.upper()}: {d.reason}", fg=colour)
     typer.echo(f"  effective ${econ.effective_usd_per_m():.3f}/M out "
                f"(break-even {econ.breakeven_tok_s():.0f} tok/s)")
-    typer.echo(f"  rent ${d.projected_cost_usd:.2f}  vs fallback ${d.fallback_cost_usd:.2f}"
-               f"  -> saves ${d.savings_usd:.2f}")
+    typer.echo(f"  rent ${d.projected_cost_usd:.2f}  vs displaced ${d.fallback_cost_usd:.2f}"
+               f"  -> frees ${d.savings_usd:.2f}")
+    if d.ok:
+        typer.secho("  note: this substitutes an open model for that work — cost only. "
+                    "Benchmark quality before switching.", fg="cyan")
     if not pol.enabled:
         typer.secho("  (burst disabled — set BURST_ENABLED=true to allow)", fg="yellow")
 
