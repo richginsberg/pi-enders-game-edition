@@ -161,17 +161,25 @@ Renting a GPU on demand from RunPod/Vast.ai, deploying a model server, registeri
 tier, and destroying it when idle — reusing the same registry → `litellm-sync` plumbing the
 physical nodes use.
 
-**The research says do this narrowly.** Break-even is
-`sustained tok/s = hourly_rate ÷ price_per_output_token`, and the cheap hosted tiers are so
-cheap that undercutting `gpt-oss-120b` ($0.17/M out) means holding **~400–2,300 tok/s every
-hour you pay for**. You can't beat S2/S3 by renting. You *can* trivially beat S0/S1
-(~39 tok/s on an A100 to undercut Sonnet 5) — but only if an open model that fits actually
-does the job you were paying S1 for.
+Break-even is `sustained tok/s = hourly_rate ÷ price_per_output_token`, and **which card you
+rent decides which tier you can undercut** — there are two distinct plays:
 
-So it's worth it for **saturated fan-out bursts**, work you can't send to an API, models no
-API hosts, or sustained S1-quality volume — and not otherwise. Full provider comparison,
-break-even table, driver design, and the six things that will bite (starting with: an
-orphaned 4090 pod is **~$17/day**): **[`docs/burst-gpu.md`](docs/burst-gpu.md)**.
+- **Big card, displace the frontier.** An RTX Pro 6000 96 GB ($1.69/hr) running a 27B int4 at
+  ~100 tok/s costs **$4.69/M output** — 5.3× cheaper than `opus-5`, 2.1× cheaper than
+  `sonnet-5`. It can **never** reach S2/S3 pricing at any achievable throughput.
+- **Cheap card, undercut the bulk tiers.** An RTX 3090 ($0.22/hr) needs 359 tok/s to beat
+  `gpt-oss-120b` — reachable with a small model and a high `--max-num-seqs`, i.e. fan-out
+  work, not interactive chat.
+
+**The operational trap to know:** RunPod's "stop the pod, pay only for disk" *doubles* the
+volume-disk rate ($0.10 → $0.20/GB/mo), wipes the container disk, releases the GPU with no
+reservation, and can hand you back a **zero-GPU pod** on restart. Use a **network volume +
+terminate** instead — $0.07/GB/mo, survives termination, and you redeploy onto whatever card
+is in stock.
+
+Full break-even tables, provider comparison, vLLM-vs-GGUF guidance, driver design, and the
+seven things that will bite (starting with: an orphaned Pro 6000 is **~$41/day** and RunPod
+ships **no built-in idle timeout**): **[`docs/burst-gpu.md`](docs/burst-gpu.md)**.
 
 ---
 
