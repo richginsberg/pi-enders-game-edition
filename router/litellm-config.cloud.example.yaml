@@ -1,0 +1,163 @@
+# LiteLLM config TEMPLATE — CLOUD-ONLY mode (no self-hosted GPUs).
+#
+#   cp litellm-config.cloud.example.yaml litellm-config.yaml   # gitignored
+#   export OPENROUTER_API_KEY=sk-or-...                        # the only key you strictly need
+#   python -m dnc_router.serve --config litellm-config.yaml --host 0.0.0.0 --port 4000
+#
+# Same router, same tiers, same prefix-hash affinity as the hybrid/self-hosted setup — the
+# ONLY difference is that every deployment is a hosted API instead of a box on your LAN.
+# The routing strategy keys off `model_info.dnc_squad`; it neither knows nor cares where a
+# deployment physically lives.
+#
+# Tier ladder (complexity -> squad): low->s3, medium->s2, high->s1, max->s0.
+# Model choices, prices and alternatives: ../docs/cloud-tiers.md
+# PRICES VERIFIED 2026-07-25 — they drift. Re-check before relying on them.
+#
+# Every tier registers TWO deployments so gateway failover works sideways instead of
+# falling up a tier (see router_settings.fallbacks). Keys are env vars — never inline them.
+
+model_list:
+  # ---------------------------------------------------------------- S0: frontier
+  # complexity=max — architecture, hard debugging, code review, planning.
+  # ~$5/$25 per M tok. This is the tier you are trying NOT to spend on by default.
+  - model_name: tier:s0
+    litellm_params:
+      model: openai/anthropic/claude-opus-5
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s0-opus5, dnc_squad: s0, max_input_tokens: 1000000, max_output_tokens: 64000 }
+  - model_name: tier:s0
+    litellm_params:
+      model: openai/openai/gpt-5.6-sol
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s0-gpt56sol, dnc_squad: s0, max_input_tokens: 1050000, max_output_tokens: 64000 }
+
+  # ---------------------------------------------------------------- S1: strong mid
+  # complexity=high — feature implementation, non-trivial refactors. ~$2/$10.
+  - model_name: tier:s1
+    litellm_params:
+      model: openai/anthropic/claude-sonnet-5
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s1-sonnet5, dnc_squad: s1, max_input_tokens: 1000000, max_output_tokens: 64000 }
+  # Budget sibling: ~5x cheaper input, ~11x cheaper output than Sonnet 5.
+  - model_name: tier:s1
+    litellm_params:
+      model: openai/deepseek/deepseek-v4-pro
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s1-dsv4pro, dnc_squad: s1, max_input_tokens: 1050000, max_output_tokens: 32000 }
+
+  # ---------------------------------------------------------------- S2: routine
+  # complexity=medium — routine code, tests, straightforward edits. ~$0.09/$0.19.
+  - model_name: tier:s2
+    litellm_params:
+      model: openai/deepseek/deepseek-v4-flash
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s2-dsv4flash, dnc_squad: s2, max_input_tokens: 1000000, max_output_tokens: 32000 }
+  # Code-specialised sibling — prefer for bulk file-writing work.
+  - model_name: tier:s2
+    litellm_params:
+      model: openai/qwen/qwen3-coder-next
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s2-qwen3codernext, dnc_squad: s2, max_input_tokens: 262144, max_output_tokens: 32000 }
+
+  # ---------------------------------------------------------------- S3: bulk
+  # complexity=low — docs, formatting, judge/classification, bulk edits. ~$0.04/$0.17.
+  - model_name: tier:s3
+    litellm_params:
+      model: openai/openai/gpt-oss-120b
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s3-gptoss120b, dnc_squad: s3, max_input_tokens: 131072, max_output_tokens: 32000 }
+  # FREE sibling. Rate-limited and best-effort: when it 429s, allowed_fails=1 cools it down
+  # and traffic moves to the paid entry above. Good deal; never make it your only S3.
+  - model_name: tier:s3
+    litellm_params:
+      model: openai/openai/gpt-oss-20b:free
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { id: s3-gptoss20b-free, dnc_squad: s3, max_input_tokens: 131072, max_output_tokens: 32000 }
+
+  # ---------------------------------------------------------------- tier:auto
+  # Resolved by the custom strategy: register ONE deployment per squad here; pick_tier()
+  # chooses the squad from complexity, then the strategy filters by dnc_squad.
+  - model_name: tier:auto
+    litellm_params: { model: openai/anthropic/claude-opus-5, api_base: https://openrouter.ai/api/v1, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: { id: auto-s0, dnc_squad: s0 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/anthropic/claude-sonnet-5, api_base: https://openrouter.ai/api/v1, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: { id: auto-s1, dnc_squad: s1 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/deepseek/deepseek-v4-flash, api_base: https://openrouter.ai/api/v1, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: { id: auto-s2, dnc_squad: s2 }
+  - model_name: tier:auto
+    litellm_params: { model: openai/openai/gpt-oss-120b, api_base: https://openrouter.ai/api/v1, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: { id: auto-s3, dnc_squad: s3 }
+
+  # ---------------------------------------------------------------- embeddings
+  # Cloud embedding for the pgvector context store (M5). DeepInfra is the cheap default;
+  # self-hosting this on CPU is also viable (see the hybrid config).
+  - model_name: embed:qwen3
+    litellm_params:
+      model: openai/Qwen/Qwen3-Embedding-0.6B
+      api_base: https://api.deepinfra.com/v1/openai
+      api_key: os.environ/DEEPINFRA_API_KEY
+    model_info: { dnc_squad: s3, mode: embedding }
+
+# --- OPTIONAL: latency override -----------------------------------------------------
+# Groq is the only provider publishing throughput (gpt-oss-20b ~1,000 tok/s) at ~2.5x the
+# OpenRouter rate for the same weights. Register it as its own model name and pin your
+# interactive//complexity-low work to it when responsiveness beats cost.
+#  - model_name: fast:s3
+#    litellm_params:
+#      model: openai/openai/gpt-oss-20b
+#      api_base: https://api.groq.com/openai/v1
+#      api_key: os.environ/GROQ_API_KEY
+#    model_info: { dnc_squad: s3 }
+
+# --- OPTIONAL: enforce a hard price ceiling per tier ---------------------------------
+# OpenRouter accepts provider-routing controls in the request body. `max_price` is a HARD
+# $/M ceiling — the clean way to guarantee a tier can never route somewhere expensive,
+# rather than trusting the model list to stay cheap. Also useful: quantizations (avoid a
+# provider quietly serving fp8), order/only/ignore, zdr. See docs/cloud-tiers.md.
+#    litellm_params:
+#      model: openai/openai/gpt-oss-120b
+#      api_base: https://openrouter.ai/api/v1
+#      api_key: os.environ/OPENROUTER_API_KEY
+#      extra_body:
+#        provider:
+#          max_price: { prompt: 0.10, completion: 0.40 }
+#          quantizations: ["fp16", "bf16", "fp32"]
+#
+# NOTE ON MODEL STRINGS: `openai/<openrouter-slug>` + api_base keeps every provider in one
+# uniform shape (swap the base URL, keep the pattern). LiteLLM also has native OpenRouter
+# support via `model: openrouter/<slug>` + OPENROUTER_API_KEY if you prefer that form.
+# The doubled prefix (openai/openai/gpt-oss-120b) is correct: the first is the LiteLLM
+# provider shape, the second is part of the OpenRouter slug.
+
+# --- Gateway-level auto-heal ---------------------------------------------------------
+# Same rationale as the self-hosted config, but the failure modes differ: hosted APIs fail
+# with 429 rate limits and provider outages rather than dead hosts. allowed_fails=1 matters
+# even more here — prefix affinity is deterministic, so a retry re-picks the SAME deployment
+# until it is cooled down; cooling on the first failure is what lets a rate-limited free
+# model hand off to its paid sibling.
+router_settings:
+  num_retries: 2
+  timeout: 600
+  allowed_fails: 1
+  cooldown_time: 60
+  # If a whole tier is unreachable, fall UP a tier rather than error.
+  fallbacks:
+    - {"tier:s3": ["tier:s2"]}
+    - {"tier:s2": ["tier:s1"]}
+    - {"tier:s1": ["tier:s0"]}
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Hosted endpoints don't need aggressive liveness probing (and probing costs requests);
+  # cooldown on failure does the real work. Enable if you want proactive detection.
+  background_health_checks: false
