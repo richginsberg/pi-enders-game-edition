@@ -1,0 +1,26 @@
+[project]
+name = "dnc-burst"
+version = "0.1.0"
+description = "Rented-GPU burst tier: saturate a cloud GPU for hours, scale to zero, never leak spend"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+dnc-burst = "burst.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["burst"]

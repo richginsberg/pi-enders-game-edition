@@ -1,0 +1,13 @@
+# Burst reaper — the feature that stops a forgotten rented GPU from costing ~$41/day.
+# Oneshot; driven by dnc-burst-reaper.timer. Safe to run when nothing is rented.
+[Unit]
+Description=divide-and-conquer burst reaper (idle TTL, hard lifetime, orphan + volume reap)
+After=network-online.target dnc-fleetd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__DNC_USER__
+WorkingDirectory=__DNC_HOME__
+EnvironmentFile=__DNC_HOME__/.env
+ExecStart=__DNC_HOME__/.venv/bin/dnc-burst reap

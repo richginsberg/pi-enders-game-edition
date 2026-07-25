@@ -21,6 +21,15 @@ DB_PATH = Path(os.environ.get("FLEETD_DB", "~/.local/share/fleetd/fleet.sqlite3"
 app = FastAPI(title="fleetd", version="0.1.0")
 db = Db(DB_PATH)
 
+# Optional: rented-GPU burst tier. Installed separately (`pip install dnc-burst`) because a
+# hybrid/local-only fleet has no use for it; mount it when present so the control plane stays
+# one daemon and one API surface.
+try:
+    from burst.api import router as _burst_router
+    app.include_router(_burst_router)
+except ImportError:  # dnc-burst not installed — /burst/* simply doesn't exist
+    pass
+
 
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"

@@ -50,7 +50,7 @@ on a 35B reasoning model).
 | **M4 — Observability + governance** | ◻ pending (no Prometheus/Grafana yet). Foothold: LiteLLM DB-backed UI + spend/logs, gateway health-check/cooldown/failover. |
 | **M5 — Personas + long-term context** | ✅ — @chankov personas + PM/Principal; pgvector store, `embed:qwen3`, vague-prompt recall/inject, salience-judge writes. |
 | **Cloud-only mode** | ✅ config + [tier reference](docs/cloud-tiers.md). Same router, no hardware. |
-| **Burst GPU (rented, on demand)** | ◻ designed, not built — [`docs/burst-gpu.md`](docs/burst-gpu.md) |
+| **Burst GPU (rented, on demand)** | ✅ [`burst/`](burst/) — saturation gate, capacity planner, generated templates, scale-to-zero reaper |
 
 ## Layout
 
@@ -63,9 +63,10 @@ on a 35B reasoning model).
 | [`harness/`](harness/) | TypeScript | Relentless (Ralph-loop) runner: DoD ledger, judge/enlistment, subagent fan-out |
 | [`context/`](context/) | Python | Long-term context: repo-partitioned pgvector store + `embed:qwen3` client |
 | [`agents/`](agents/) | Markdown | Engineering personas bound to fleet tiers |
+| [`burst/`](burst/) | Python | *(optional)* Rented-GPU burst tier: saturation gate, capacity planner, vLLM templates, scale-to-zero reaper |
 | [`tools/`](tools/) | Python | Operational scripts (`fleetpower.py`, benchmarks) |
 | [`deploy/`](deploy/) | Bash/systemd | Control-plane IaC: `bootstrap.sh`, systemd units, [standup runbook](deploy/README.md) |
-| [`docs/`](docs/) | Markdown | [Cloud tiers & pricing](docs/cloud-tiers.md), [burst GPU](docs/burst-gpu.md), [team fan-out](docs/team-fanout-prompt.md), [idea seeds](docs/ideas/README.md) |
+| [`docs/`](docs/) | Markdown | [Cloud tiers & pricing](docs/cloud-tiers.md), [burst GPU](docs/burst-gpu.md), [burst templates](docs/burst-templates.md), [team fan-out](docs/team-fanout-prompt.md), [idea seeds](docs/ideas/README.md) |
 
 ---
 
@@ -155,31 +156,53 @@ interception) and we fell back to a pay-per-token key — and provider terms may
 it. Opt-in and yours to validate; see
 [the caveats](docs/cloud-tiers.md#on-subscriptions-as-the-s0-tier).
 
-## Burst GPU (designed, not built)
+## Burst GPU — rent a card, saturate it, give it back
 
-Renting a GPU on demand from RunPod/Vast.ai, deploying a model server, registering it as a
-tier, and destroying it when idle — reusing the same registry → `litellm-sync` plumbing the
-physical nodes use.
+`pip install -e burst/` adds an optional tier backed by a **rented** GPU, for work that is
+too big for the cheap APIs and too expensive on the frontier ones. It mounts into fleetd
+automatically (`/burst/*`) and ships a CLI:
 
-Break-even is `sustained tok/s = hourly_rate ÷ price_per_output_token`, and **which card you
-rent decides which tier you can undercut** — there are two distinct plays:
+```bash
+dnc-burst capacity --model qwen3.6-35b-a3b --context 262144 --min-seqs 8   # which card, and why
+dnc-burst template --model qwen3.6-35b-a3b --gpu l40                       # generated launch args
+dnc-burst gate --tokens 50000000 --hours 4 --tok-s 800 --fallback-usd-per-m 10
+BURST_ENABLED=true dnc-burst up --model qwen3.6-35b-a3b
+dnc-burst status ; dnc-burst reap ; dnc-burst down
+```
 
-- **Big card, displace the frontier.** An RTX Pro 6000 96 GB ($1.69/hr) running a 27B int4 at
-  ~100 tok/s costs **$4.69/M output** — 5.3× cheaper than `opus-5`, 2.1× cheaper than
-  `sonnet-5`. It can **never** reach S2/S3 pricing at any achievable throughput.
-- **Cheap card, undercut the bulk tiers.** An RTX 3090 ($0.22/hr) needs 359 tok/s to beat
-  `gpt-oss-120b` — reachable with a small model and a high `--max-num-seqs`, i.e. fan-out
-  work, not interactive chat.
+**It refuses more often than it accepts, on purpose.** Renting only beats an API at full
+saturation over hours, so the gate demands millions of output tokens, a multi-hour run, high
+saturation, and a margin over the fallback tier:
 
-**The operational trap to know:** RunPod's "stop the pod, pay only for disk" *doubles* the
-volume-disk rate ($0.10 → $0.20/GB/mo), wipes the container disk, releases the GPU with no
-reservation, and can hand you back a **zero-GPU pod** on restart. Use a **network volume +
-terminate** instead — $0.07/GB/mo, survives termination, and you redeploy onto whatever card
-is in stock.
+```
+$ dnc-burst gate --tokens 50000000 --hours 4 --tok-s 800 --fallback-usd-per-m 10
+BURST: 1 node x 4.0h at $1.69/hr = $6.76, vs $500.00 on the fallback tier (saves $493.24)
 
-Full break-even tables, provider comparison, vLLM-vs-GGUF guidance, driver design, and the
-seven things that will bite (starting with: an orphaned Pro 6000 is **~$41/day** and RunPod
-ships **no built-in idle timeout**): **[`docs/burst-gpu.md`](docs/burst-gpu.md)**.
+$ dnc-burst gate --tokens 50000000 --hours 4 --tok-s 800 --fallback-usd-per-m 0.17
+USE_FALLBACK: effective $0.587/M does not beat the fallback $0.170/M (need >2761 tok/s)
+```
+
+- **Capacity is computed, not guessed.** `--max-num-seqs` comes from the KV pool left after
+  the weights, derived from each model's real attention geometry. Both Qwen3.6 models use
+  hybrid linear attention (3 linear : 1 full layer), so 262k context costs 8.0 GiB on the
+  dense 27B and **2.5 GiB** on the 35B-A3B MoE — which is why the MoE is the saturation
+  default. A copy-pasted `--max-num-seqs 2` wastes ~77% of a 96 GB card.
+- **Cold start spills upward.** A node is registered only after a real `/v1/models` probe, so
+  the tier has no healthy member while it boots and the gateway's existing tier fallback
+  carries the work to the higher tier. No new routing code.
+- **Scale to zero, then reap the leftovers.** Idle TTL scales down; a hard `max_lifetime_s`
+  beats any idle timer; a daily spend cap gates provisioning; startup reconciliation catches
+  pods a crash orphaned; and a separate volume reaper deletes weights volumes nobody has
+  booted against — they bill monthly long after the pod is gone.
+- **Terminate, never stop.** Stopping a RunPod pod doubles the disk rate, wipes the container
+  disk, releases the GPU and can resume with **zero GPUs**.
+
+Run the reaper on a timer — it is the feature that stops a forgotten Pro 6000 costing ~$41/day:
+`deploy/dnc-burst-reaper.{service,timer}`.
+
+Switch-by-switch reference and how changing model affects every config:
+**[`docs/burst-templates.md`](docs/burst-templates.md)**. Economics, provider comparison and
+the measured break-even tables: **[`docs/burst-gpu.md`](docs/burst-gpu.md)**.
 
 ---
 
